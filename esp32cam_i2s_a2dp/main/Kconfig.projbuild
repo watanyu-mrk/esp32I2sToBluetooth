@@ -1,0 +1,98 @@
+menu "ESP32-CAM I2S to A2DP bridge"
+
+config APP_BT_DEVICE_NAME
+    string "Local Bluetooth name"
+    default "ESP32-CAM-A2DP"
+    help
+        Name advertised by the ESP32-CAM over Bluetooth Classic.
+
+config APP_BT_TARGET_NAME
+    string "Bluetooth speaker name to connect to"
+    default "BT-Speaker"
+    help
+        The A2DP source connects to the first discovered device whose name
+        starts with this string. Leave empty to connect to the first
+        discoverable A2DP sink.
+
+choice APP_OUTPUT_RATE
+    prompt "A2DP sample rate (PCM sent to the speaker)"
+    default APP_OUTPUT_RATE_44100
+
+    config APP_OUTPUT_RATE_44100
+        bool "44100 Hz"
+    config APP_OUTPUT_RATE_48000
+        bool "48000 Hz"
+endchoice
+
+choice APP_INPUT_RATE
+    prompt "I2S input sample rate (what the ESP32-S3 sends)"
+    default APP_INPUT_RATE_44100
+    help
+        I2S runs as a slave, so this value is not used to generate a clock.
+        It only describes the incoming rate: when it differs from the A2DP
+        sample rate the PCM is resampled (linear interpolation) before it
+        is queued for Bluetooth.
+
+    config APP_INPUT_RATE_44100
+        bool "44100 Hz"
+    config APP_INPUT_RATE_48000
+        bool "48000 Hz"
+endchoice
+
+config APP_I2S_BCLK_GPIO
+    int "I2S BCLK GPIO (input)"
+    default 14
+    range 0 39
+
+config APP_I2S_WS_GPIO
+    int "I2S WS/LRCK GPIO (input)"
+    default 13
+    range 0 39
+
+config APP_I2S_DATA_GPIO
+    int "I2S DATA GPIO (input)"
+    default 4
+    range 0 39
+    help
+        GPIO4 also drives the ESP32-CAM flash LED, so the LED may glow
+        faintly while audio is being received.
+
+config APP_I2S_PCM_SHIFT_BITS
+    int "Right shift applied to each 32-bit I2S slot to obtain PCM16"
+    default 16
+    range 0 16
+    help
+        16 assumes the 16-bit PCM is left aligned in the 32-bit slot
+        (upper half), which is what ESP32-audioI2S produces with 32-bit
+        slots. Use 0 if the data turns out to be right aligned.
+
+config APP_AUDIO_BUFFER_MS
+    int "Audio buffer size (ms)"
+    default 300
+    range 50 2000
+    help
+        Jitter buffer between the I2S receiver and the A2DP data callback.
+        Larger values survive longer I2S/BT hiccups but add latency.
+
+config APP_LOOPBACK_TEST
+    bool "Run an I2S loopback self test at boot"
+    default n
+    help
+        Uses I2S1 as a master transmitter on the same BCLK/WS/DATA pins the
+        receiver listens on (internal GPIO loopback, no wiring needed), then
+        verifies the frames that reach the audio buffer: 32-bit slot
+        conversion, stereo order and the configured shift. Runs once, logs
+        PASS/FAIL, and does not require Bluetooth or the ESP32-S3.
+
+config APP_TEST_TONE
+    bool "Use a generated 1 kHz test tone instead of the I2S input"
+    default n
+    help
+        Lets you verify the Bluetooth path without the ESP32-S3 connected.
+
+config APP_STATS_INTERVAL_MS
+    int "Status log interval (ms)"
+    default 5000
+    range 1000 60000
+
+endmenu

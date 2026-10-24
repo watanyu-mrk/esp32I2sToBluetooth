@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "main.cpp"
+        "a2dp_source.cpp"
+        "i2s_receiver.c"
+        "tone_source.c"
+        "loopback_test.c"
+        "audio_buffer.c"
+        "resampler.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        ESP32-A2DP
+        arduino-audio-tools
+        esp_driver_i2s
+        esp_timer
+        nvs_flash
+        spi_flash
+        esp_hw_support
+)
