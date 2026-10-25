@@ -5,14 +5,25 @@ idf_component_register(
         "i2s_receiver.c"
         "tone_source.c"
         "loopback_test.c"
+        "pin_activity.c"
         "audio_buffer.c"
         "resampler.c"
+        "app_settings.c"
+        "bt_scan.c"
+        "config_portal.c"
     INCLUDE_DIRS "."
+    EMBED_FILES "web/index.html"
     REQUIRES
         ESP32-A2DP
         arduino-audio-tools
         esp_driver_i2s
+        esp_driver_gpio
         esp_timer
+        esp_http_server
+        esp_wifi
+        esp_netif
+        esp_event
+        json
         nvs_flash
         spi_flash
         esp_hw_support

@@ -86,6 +86,28 @@ config APP_AUDIO_BUFFER_MS
         Jitter buffer between the I2S receiver and the A2DP data callback.
         Larger values survive longer I2S/BT hiccups but add latency.
 
+config APP_PIN_CHECK
+    bool "Check that BCLK/WS/DATA are toggling at boot"
+    default y
+    help
+        Runs after boot, before the I2S receiver starts: the three input
+        pins are sampled as plain GPIOs for a moment and each line is logged
+        as toggling, static HIGH or static LOW. A silent BCLK means the
+        ESP32-S3 is not clocking the bus (or a wire is missing), which
+        otherwise only shows up as an endless stream of I2S read timeouts.
+
+        Not used in test tone mode (CONFIG_APP_TEST_TONE), where the I2S
+        input is ignored anyway.
+
+config APP_PIN_CHECK_WINDOW_MS
+    int "GPIO activity sampling window (ms)"
+    default 60
+    range 10 500
+    depends on APP_PIN_CHECK
+    help
+        How long each pin is watched. Longer windows catch a clock that
+        starts late, and give slow lines like WS more edges to count.
+
 config APP_LOOPBACK_TEST
     bool "Run an I2S loopback self test at boot"
     default n
@@ -95,6 +117,9 @@ config APP_LOOPBACK_TEST
         verifies the frames that reach the audio buffer: 32-bit slot
         conversion, stereo order and the configured shift. Runs once, logs
         PASS/FAIL, and does not require Bluetooth or the ESP32-S3.
+
+        The loopback master drives the same pins, so run it with the
+        ESP32-S3 disconnected to avoid two drivers on one bus.
 
 config APP_TEST_TONE
     bool "Use a generated 1 kHz test tone instead of the I2S input"

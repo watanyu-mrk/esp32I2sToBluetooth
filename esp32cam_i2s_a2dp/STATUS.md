@@ -1,11 +1,73 @@
 # สถานะงาน (handoff) — กลับมาทำต่อจากไฟล์นี้
 
 อัปเดตล่าสุด: 25 ต.ค. 2026 · บอร์ดทดสอบ: ESP32-CAM (ESP32-D0WD) ที่ **COM6**
-(รอบล่าสุด: ทดสอบกับลำโพงจริง "BT Speaker" — จับคู่และ stream ได้ พร้อมแก้บั๊ก
-2 ตัวที่ทำให้ไม่มีเสียง/แครช ดูหัวข้อ "บั๊กที่แก้ไปแล้ว")
+(รอบล่าสุด: เพิ่ม **Wi-Fi config portal (AP mode)** + boot-time pin check — build ผ่าน
+แต่ **ยังแฟลชบิลด์สุดท้ายไม่ลง** เพราะเข้า download mode ไม่ได้ ดูหัวข้อถัดไป)
 
 อ่าน `README.md` สำหรับผังสาย/ตัวเลือก/menuconfig ทั้งหมด — ไฟล์นี้สรุปแค่ว่า
 **ทำอะไรเสร็จแล้ว, อะไรยังไม่ได้ทำ, และเริ่มต่อยังไง**
+
+## รอบล่าสุด — Wi-Fi config portal (AP mode)
+
+**ทำเสร็จ (build ผ่าน, image 1.4 MB, `firmware.bin` รวมทุกอย่างแล้ว)**
+
+- ค่าตั้งค่าย้ายจาก compile-time → NVS (`app_settings.c`, namespace `appcfg`):
+  target name / local name / SSP / I2S input rate / buffer ms — Kconfig เป็นแค่ค่าโรงงาน
+- AP `ESP32-A2DP-Setup` (`esp32cam`) + HTTP server (`config_portal.c`) + หน้าเว็บ
+  ฝังในเฟิร์มแวร์ (`main/web/index.html`, `EMBED_FILES`)
+  - `GET /` หน้าเว็บ, `GET /api/state`, `POST /api/settings`, `POST /api/rescan`,
+    `POST /api/reboot`
+  - รายชื่อลำโพงมาจาก discovery ของ A2DP เอง (`bt_scan.c` เก็บชื่อ/addr/RSSI 8 ตัว)
+  - หน้าตั้งค่า: เลือกลำโพง, ชื่อน้องบอร์ด, SSP, input rate, buffer ms
+    (A2DP output ตรึง 44100 — SBC ของ Bluedroid ฮาร์ดโค้ด `btc_a2dp_source.c:446`)
+- ลำดับการทำงาน: portal เปิด 3 s หลังบูตถ้ายังต่อลำโพงไม่ได้ → ปิด Wi-Fi ทั้งก้อน
+  (`esp_wifi_deinit`) ทันทีที่ **เริ่ม**เชื่อมต่อ (`a2dp_source_is_active()`), เปิดใหม่
+  เมื่อหลุดต่อเนื่อง 30 s; ระหว่าง portal เปิดจะคืน ring buffer 64 KB ให้ระบบ
+- boot-time pin check (`pin_activity.c`): sample BCLK/WS/DATA 60 ms แล้วบอกว่า
+  toggling / static HIGH / static LOW
+
+**ยืนยันบนบอร์ดจริงแล้ว**
+
+| สิ่งที่ทดสอบ | ผล |
+|---|---|
+| settings เขียน/อ่าน NVS ข้ามบูต | ✅ `settings: loaded: sink 'BT Speaker', ... buffer 300 ms` |
+| AP + HTTP server ขึ้น | ✅ `access point 'ESP32-A2DP-Setup' up` / `config portal ready (75780 bytes free)` |
+| คืน ring buffer ตอนเข้าโหมดตั้งค่า | ✅ `audio buffer released for the config portal (122036 bytes free)` |
+| ปิด portal เมื่อเริ่มต่อลำโพง | ✅ `speaker link starting: closing the config portal` → `wi-fi stopped (106004 bytes free)` |
+| discovery → รายชื่อลำโพง | ✅ `bt_scan: sink BT Speaker (00:58:56:74:31:f3, -35 dBm)` |
+| pin check ตอนบูต | ✅ `BCLK: toggling, 44456 edges` / `WS: toggling, 5297` |
+| หน้าเว็บ (Chrome headless + mock API) | ✅ เรนเดอร์สถานะ/รายชื่อ/RSSI ถูก, escape ชื่อที่มีอัญประกาศได้ |
+| ต่อ AP จาก Windows + GET/POST จริง | ❌ ยังไม่ได้ (ติดข้อล่าง) |
+
+**บั๊กที่เจอจากการรันและแก้แล้ว**
+
+1. `httpd_create: Failed to allocate memory for HTTP session data` — default 7 sockets
+   (~9 KB contiguous) ไม่พอ ⇒ `max_open_sockets=2`, `max_resp_headers=4`, stack 4096
+2. มี client ต่อแล้ว heap เหลือ **2 248 ไบต์** ⇒ `httpd_sock_err: error in send` (ได้
+   200 แต่ body 0 ไบต์) ⇒ คืน ring buffer 64 KB ตอนเข้าโหมดตั้งค่า, ลด TCP window
+   (lwIP 2880), `LWIP_MAX_SOCKETS=8`
+3. `max_open_sockets=2` ถูกปฏิเสธเมื่อ `LWIP_MAX_SOCKETS=4` (server กันไว้ 3)
+4. ลด `MGMT_SBUF_NUM` 32→8 + dynamic buffer 8→4 ทำให้ **AP ไม่ส่ง beacon** (มือถือ
+   สแกนไม่เห็น SSID) ⇒ คืนค่าเดิม อย่าลดต่ำกว่านี้
+5. Wi-Fi IRAM opt เปิดอยู่ทำให้ลิงก์ไม่ผ่าน (`iram0_0_seg overflowed by 720 bytes`)
+   ⇒ ปิด `ESP_WIFI_IRAM_OPT` / `ESP_WIFI_RX_IRAM_OPT`
+
+**ค้างอยู่ — ต้องแฟลชบิลด์สุดท้าย**
+
+- บอร์ดยังรันบิลด์ที่มี `MGMT_SBUF_NUM=8` (AP ไม่ส่ง beacon) เพราะแฟลชรอบหลัง ๆ ล้ม
+- **เข้า download mode จาก software ไม่ได้**: ทดสอบแล้ว DTR/IO0 ของ adapter บนบอร์ดนี้
+  ไม่ได้ต่อกัน — สั่ง DTR=True/False + reset แล้วชิปยังขึ้น `boot:0x13
+  (SPI_FAST_FLASH_BOOT)` ทั้งคู่ ⇒ ต้อง **จั๊ม IO0→GND แล้วตัด/ต่อ USB ใหม่**
+- ขั้นตอนที่เหลือ (ทำทันทีที่เข้า download mode ได้):
+  ```bash
+  cd esp32cam_i2s_a2dp
+  esptool --chip esp32 -p COM6 -b 460800 --before no_reset write_flash 0x0 firmware.bin
+  # log ที่ต้องเห็น: settings: loaded / config portal ready (~75 KB free) /
+  # buffer released / access point 'ESP32-A2DP-Setup' up
+  # แล้วต่อ Wi-Fi เข้า AP: curl http://192.168.4.1/api/state , GET / , POST /api/settings
+  ```
+- หมายเหตุ: `firmware.bin` เติมช่วง NVS ด้วย 0xFF ⇒ แฟลชแล้วค่าตั้งค่า/คู่ BT หาย
+  บอร์ดจะกลับไปใช้ target จาก Kconfig (`BT Speaker`) แล้วจับคู่ใหม่เอง
 
 ## ภาพรวมสถานะ
 
@@ -19,6 +81,7 @@
 | Self-test resampler 48k→44.1k (ระดับฟังก์ชัน) | ✅ PASS (1880/1881.6 frames) |
 | จับคู่ + stream ไปลำโพง "BT Speaker" จริง | ⚠️ จับคู่ได้, `BT=Streaming`, tone ป้อนข้อมูลแล้ว — แต่เสียงยังไม่ได้ยืนยันด้วยหู และ link หลุดหลัง ~15 s (heap หมด) |
 | รับ PCM จาก ESP32-S3 จริง | ❌ ยังไม่ได้ทดสอบ (ยังไม่ต่อสาย) |
+| Wi-Fi config portal (AP + หน้าเว็บ) | ⚠️ build ผ่าน + AP/HTTP ขึ้นจริง แต่ยังแฟลชบิลด์สุดท้ายไม่ลง (IO0) และยังไม่ได้ทดสอบ HTTP จาก client จริง |
 | Soak test 30 นาที | ❌ ยังไม่ได้ทำ |
 | แก้ฝั่งโปรเจกต์ S3 (`setOutputSampleRate`) | ❌ ยังไม่ได้แก้ (อยู่นอก repo นี้) |
 

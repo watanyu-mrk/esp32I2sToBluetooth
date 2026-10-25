@@ -8,12 +8,15 @@
 #include "nvs_flash.h"
 
 #include "app_config.h"
+#include "app_settings.h"
 #include "audio_buffer.h"
+#include "bt_scan.h"
 
 static const char *TAG = "a2dp_src";
 
 static BluetoothA2DPSource s_source;
 static bool s_started = false;
+static volatile bool s_scanning = false;
 
 // The library only refreshes the cached audio state that get_audio_state()
 // returns - and therefore that a2dp_source_is_streaming() depends on - inside
@@ -48,12 +51,22 @@ static int32_t provide_audio(uint8_t *data, int32_t len) {
   return len;
 }
 
-// Used when no target name is configured.
-static bool accept_any_sink(const char *name, esp_bd_addr_t address, int rssi) {
-  (void)address;
-  ESP_LOGI(TAG, "sink candidate '%s' (rssi %d)", name != nullptr ? name : "?",
-           rssi);
-  return true;
+// Called for every discovered device with an audio service. It records the
+// device for the config page and decides whether it is the configured sink:
+// an empty target name accepts the first one, otherwise the name has to start
+// with the configured text (the same rule the library applies by itself).
+static bool on_sink_found(const char *name, esp_bd_addr_t address, int rssi) {
+  bt_scan_record(name, address, rssi);
+
+  const char *target = app_settings_get()->target_name;
+  if (target[0] == '\0') return true;
+  if (name == nullptr) return false;
+  return strncmp(name, target, strlen(target)) == 0;
+}
+
+static void on_discovery_mode(esp_bt_gap_discovery_state_t state) {
+  s_scanning = state == ESP_BT_GAP_DISCOVERY_STARTED;
+  ESP_LOGI(TAG, "discovery %s", s_scanning ? "started" : "stopped");
 }
 
 // The library stores the last peer address in NVS and reconnects to it on
@@ -81,36 +94,58 @@ static void clear_stored_peer(void) {
   nvs_close(handle);
 }
 
-void a2dp_source_start(const char *target_name) {
+void a2dp_source_start(void) {
   if (s_started) return;
   s_started = true;
 
-  s_source.set_local_name(APP_BT_DEVICE_NAME);
+  const app_settings_t *settings = app_settings_get();
+
+  s_source.set_local_name(settings->local_name);
   s_source.set_auto_reconnect(true, APP_BT_RECONNECT_TRIES);
   s_source.set_data_callback(provide_audio);
 
   // Required for is_streaming() to ever become true (see the handler above).
   s_source.set_on_audio_state_changed(on_audio_state_changed);
 
+  // Both callbacks are also what turns the plain discovery into a usable
+  // "which speakers are nearby" list for the config page.
+  s_source.set_ssid_callback(on_sink_found);
+  s_source.set_discovery_mode_callback(on_discovery_mode);
+
   // SSP must be configured before start(): the library applies the IO
   // capability to Bluedroid while bringing the stack up. Many modern speakers
   // refuse the legacy PIN handshake and only pair over Secure Simple Pairing.
-  s_source.set_ssp_enabled(APP_BT_SSP_ENABLED != 0);
+  s_source.set_ssp_enabled(settings->ssp_enabled);
   ESP_LOGI(TAG, "pairing: SSP %s",
-           APP_BT_SSP_ENABLED ? "enabled (numeric value auto-confirmed)"
-                              : "disabled (legacy PIN only)");
+           settings->ssp_enabled ? "enabled (numeric value auto-confirmed)"
+                                 : "disabled (legacy PIN only)");
 
-  if (target_name != nullptr && target_name[0] != '\0') {
+  if (settings->target_name[0] != '\0') {
     clear_stored_peer();
-    ESP_LOGI(TAG, "local name '%s', looking for sink '%s'", APP_BT_DEVICE_NAME,
-             target_name);
-    s_source.start(target_name);
+    ESP_LOGI(TAG, "local name '%s', looking for sink '%s'",
+             settings->local_name, settings->target_name);
+    s_source.start(settings->target_name);
   } else {
     ESP_LOGI(TAG, "local name '%s', connecting to the first A2DP sink",
-             APP_BT_DEVICE_NAME);
-    s_source.set_ssid_callback(accept_any_sink);
+             settings->local_name);
     s_source.start();
   }
+}
+
+bool a2dp_source_is_connected(void) {
+  if (!s_started) return false;
+  return s_source.is_connected();
+}
+
+bool a2dp_source_is_active(void) {
+  if (!s_started) return false;
+  return s_source.get_connection_state() !=
+         ESP_A2D_CONNECTION_STATE_DISCONNECTED;
+}
+
+bool a2dp_source_is_scanning(void) {
+  if (!s_started) return false;
+  return s_scanning || s_source.is_discovery_active();
 }
 
 bool a2dp_source_is_streaming(void) {

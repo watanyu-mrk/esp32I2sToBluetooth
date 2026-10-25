@@ -18,6 +18,7 @@ typedef struct {
   int ws_gpio;
   int data_gpio;
   uint32_t sample_rate;  // incoming rate (slave: descriptive, not generated)
+  uint32_t output_rate;  // rate the A2DP stream consumes (resampler target)
   int shift_bits;        // right shift converting a 32-bit slot to PCM16
   audio_gate_t gate;     // optional: return false to drop input
   int core_id;

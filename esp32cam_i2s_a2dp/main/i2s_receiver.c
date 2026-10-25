@@ -1,5 +1,6 @@
 #include "i2s_receiver.h"
 
+#include <inttypes.h>
 #include <string.h>
 
 #include "driver/i2s_std.h"
@@ -87,7 +88,7 @@ static void i2s_receive_task(void *arg) {
       gate_was_closed = false;
     }
 
-    if (APP_INPUT_SAMPLE_RATE != APP_OUTPUT_SAMPLE_RATE) {
+    if (s_config.sample_rate != s_config.output_rate) {
       size_t converted =
           resampler_process(&s_resampler, s_pcm, frames, s_resampled,
                             APP_RESAMPLED_MAX_FRAMES);
@@ -154,7 +155,7 @@ bool i2s_receiver_start(const i2s_receiver_config_t *config) {
   }
 
   memset(&s_stats, 0, sizeof(s_stats));
-  resampler_init(&s_resampler, APP_INPUT_SAMPLE_RATE, APP_OUTPUT_SAMPLE_RATE);
+  resampler_init(&s_resampler, config->sample_rate, config->output_rate);
   s_running = true;
 
   BaseType_t created =
@@ -170,9 +171,11 @@ bool i2s_receiver_start(const i2s_receiver_config_t *config) {
     return false;
   }
 
-  ESP_LOGI(TAG, "slave RX: BCLK=%d WS=%d DIN=%d, 32-bit slots, shift=%d",
+  ESP_LOGI(TAG,
+           "slave RX: BCLK=%d WS=%d DIN=%d, 32-bit slots, shift=%d, "
+           "%" PRIu32 " Hz -> %" PRIu32 " Hz",
            config->bclk_gpio, config->ws_gpio, config->data_gpio,
-           config->shift_bits);
+           config->shift_bits, config->sample_rate, config->output_rate);
   return true;
 }
 

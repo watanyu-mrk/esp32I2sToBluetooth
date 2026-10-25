@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdlib.h>
 
+#include "app_settings.h"
 #include "audio_buffer.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -17,7 +18,8 @@ static TaskHandle_t s_task;
 
 static void tone_task(void *arg) {
   audio_gate_t gate = (audio_gate_t)arg;
-  const size_t frames = APP_TONE_CHUNK_FRAMES;
+  const uint32_t rate = app_settings_get()->output_rate;
+  const size_t frames = rate / 100;  // 10 ms, so a 1 kHz tick paces it
   // MALLOC_CAP_8BIT is required: plain internal RAM may include IRAM, which
   // only supports 32-bit accesses, so the int16_t stores below would fault
   // with a LoadStoreError.
@@ -30,7 +32,7 @@ static void tone_task(void *arg) {
     return;
   }
 
-  const double delta = 2.0 * kPi * APP_TONE_FREQ_HZ / APP_OUTPUT_SAMPLE_RATE;
+  const double delta = 2.0 * kPi * APP_TONE_FREQ_HZ / (double)rate;
   double phase = 0.0;
   TickType_t last_wake = xTaskGetTickCount();
   bool announced = false;

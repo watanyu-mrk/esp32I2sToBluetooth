@@ -62,13 +62,50 @@ esp32cam_i2s_a2dp/
     ├── main.cpp                # app_main: boot info, สถานะทุก 5 วินาที
     ├── app_config.h            # แปลง Kconfig → ค่าคงที่
     ├── Kconfig.projbuild       # ตัวเลือกใน menuconfig
+    ├── app_settings.c/.h       # ค่าตั้งค่าใน NVS (แก้จากหน้าเว็บได้)
     ├── i2s_receiver.c/.h       # I2S slave RX task + แปลง PCM16
     ├── audio_buffer.c/.h       # SPSC ring buffer (lock-free, atomic)
     ├── resampler.c/.h          # 48k → 44.1k (linear interpolation)
     ├── a2dp_source.cpp/.h      # BluetoothA2DPSource + data callback
+    ├── bt_scan.c/.h            # แคชรายชื่อลำโพงที่ discovery เจอ
+    ├── config_portal.c/.h      # Wi-Fi AP + HTTP server โหมดตั้งค่า
+    ├── web/index.html          # หน้าเว็บ (ฝังใน firmware ด้วย EMBED_FILES)
+    ├── pin_activity.c/.h       # ตรวจว่า BCLK/WS/DATA มีสัญญาณตอนบูต
     ├── tone_source.c/.h        # โทน 1 kHz สำหรับทดสอบโดยไม่ต้องมี S3
     └── loopback_test.c/.h      # self-test (I2S loopback + resampler)
 ```
+
+## ตั้งค่าผ่าน Wi-Fi (AP mode)
+
+ค่าที่เคยต้องแก้ใน `menuconfig` แล้ว build ใหม่ ตอนนี้แก้จากหน้าเว็บได้
+(เก็บใน NVS namespace `appcfg`):
+
+| ตั้งค่าได้ | หมายเหตุ |
+|---|---|
+| ชื่อลำโพงเป้าหมาย | เลือกจากรายการที่สแกนเจอ หรือพิมพ์เอง (เทียบแบบขึ้นต้นด้วย) |
+| ชื่อ Bluetooth ของบอร์ด | ชื่อที่ประกาศออกไป |
+| SSP เปิด/ปิด | สำหรับลำโพงรุ่นเก่าที่ใช้ PIN แบบเดิม |
+| I2S input rate | 44100 / 48000 Hz (ต้องตรงกับที่ ESP32-S3 ส่งมา) |
+| ขนาด jitter buffer | 50–2000 ms |
+
+**AP เปิดเมื่อไหร่** — เปิดเอง 3 วินาทีหลังบูต *ถ้ายังต่อลำโพงไม่ได้* และเปิดอีกครั้ง
+เมื่อหลุดการเชื่อมต่อนาน 30 วินาที พอต่อลำโพงได้/เริ่มสตรีม Wi-Fi จะถูกปิดทั้งก้อน
+(`esp_wifi_deinit`) เพื่อคืน RAM และวิทยุให้ Bluetooth
+
+```
+SSID     : ESP32-A2DP-Setup
+Password : esp32cam
+URL      : http://192.168.4.1/
+```
+
+- **จะเข้าไปตั้งค่าได้ต้องปิดลำโพงก่อน** (หรือให้หลุดการเชื่อมต่อ) ไม่งั้นบอร์ดจะต่อลำโพงได้
+  ภายใน ~10 วินาที แล้วปิด AP ไปเอง
+- กด “บันทึกและรีสตาร์ท” แล้วบอร์ดรีบูต 1 รอบ ค่าใหม่มีผลทันทีหลังบูต
+- หน้าสถานะ (`/api/state`) และรายการอุปกรณ์ที่สแกนเจอ รีเฟรชเองทุก 2 วินาที
+- **A2DP ส่งออก 44100 Hz คงที่** — SBC encoder ของ Bluedroid ฮาร์ดโค้ด PCM เป็น 44100
+  (`btc_a2dp_source.c`: `media_feeding.cfg.pcm.sampling_freq = 44100`) หน้าเว็บจึงแสดง
+  ค่านี้แบบอ่านอย่างเดียว ถ้าเปลี่ยนเป็น 48000 เสียงจะเร็วขึ้น ~9%
+- ระหว่าง AP เปิดอยู่ Wi-Fi กับ Bluetooth ใช้วิทยุร่วมกัน (coex) การค้นหาอุปกรณ์อาจช้ากว่าปกติ
 
 ## ติดตั้ง dependency
 
@@ -99,11 +136,35 @@ idf.py -p COM6 flash monitor     # หรือแยกเป็น flash แ�
 Python 3.12 จาก uv) ถ้าเรียกจาก Git Bash ให้ใช้ `C:\esp\run_idf.py`
 เพราะ `idf.py` จะไม่ทำงานเมื่อมีตัวแปร `MSYSTEM`
 
-ผลการ build จริง:
+### ไฟล์ image เดียว (firmware.bin)
+
+`firmware.bin` ในโฟลเดอร์โปรเจกต์คือ image ที่รวม **bootloader + partition table +
+application** ไว้ไฟล์เดียว สำหรับแจกจ่ายหรือแฟลชบอร์ดเปล่า:
+
+```bash
+# สร้างใหม่ (ทำอัตโนมัติหลัง build ใด ๆ ก็ใช้คำสั่งนี้)
+cd build
+esptool.py --chip esp32 merge_bin -o ../firmware.bin \
+  --flash_mode dio --flash_freq 40m --flash_size 4MB \
+  0x1000 bootloader/bootloader.bin \
+  0x8000 partition_table/partition-table.bin \
+  0x10000 esp32cam_i2s_a2dp.bin
+
+# แฟลชทั้งไฟล์ที่ offset 0x0
+cd ..
+esptool.py --chip esp32 -p COM6 -b 460800 write_flash 0x0 firmware.bin
+```
+
+ข้อควรทราบ: ไฟล์นี้เติมช่วงว่างระหว่าง partition table กับ app ด้วย `0xFF` ⇒
+แฟลชทับแล้ว **NVS (ค่าตั้งค่าและคู่ Bluetooth) จะว่างทั้งหมด** บอร์ดจะกลับไปใช้ค่า
+จาก Kconfig แล้วต้องจับคู่ลำโพงใหม่ (หรือตั้งผ่านหน้าเว็บ)
+
+ผลการ build จริง (รอบล่าสุด รวม Wi-Fi config portal):
 
 ```
-esp32cam_i2s_a2dp.bin binary size 0xd34d0 bytes.
-Smallest app partition is 0x300000 bytes. 0x22cb30 bytes (72%) free.
+esp32cam_i2s_a2dp.bin binary size 0x15e640 bytes (1.4 MB)
+Smallest app partition is 0x300000 bytes. 0x1a19c0 bytes (54%) free.
+firmware.bin           1500736 bytes, flash at 0x0
 ```
 
 ## ตัวเลือกใน menuconfig
@@ -282,7 +343,10 @@ m_i2s_std_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
 | `BT_OSI: malloc failed ... size=4112` + `btc_media_aa_prep_sbc_2_send no buffer TxCnt 15` | stack จอง TX buffer 4112 B ต่อ packet แล้ว peer ไม่ drain / link อ่อน ⇒ heap หมดแล้วหลุด — ลด `Audio buffer` เพื่อคืน RAM และดูระยะ/RSSI ของลำโพง |
 | ไม่ยอมจับคู่ | ตั้งชื่อลำโพงให้ตรง (เทียบแบบ prefix) และเปิดลำโพงให้อยู่ในโหมด discoverable; ถ้าลำโพงรุ่นใหม่ต้องการ SSP ให้เปิด *Use Secure Simple Pairing (SSP)* ใน menuconfig (ดูหัวข้อ 2.1) — ค่าเริ่มต้นยังใช้ PIN `1234` แบบ legacy |
 | จำ peer เก่า | แก้แล้ว: ล้าง NVS ตอนบูตเมื่อระบุชื่อลำโพง |
-| flash ไม่ได้ | ESP32-CAM ต้องดึง GPIO0 ลง GND ตอนอัปโหลด (บอร์ดรุ่นมี USB-serial ทำเอง) |
+| flash ไม่ได้ | ESP32-CAM ต้องดึง GPIO0 ลง GND ตอนอัปโหลด (บอร์ดรุ่นมี USB-serial ทำเอง); ถ้า esptool ขึ้น `Invalid head of packet (0x65)` / `The chip stopped responding` ให้ถอดสาย I2S ของ S3 ออกก่อนแฟลช — ไฟเลี้ยงจะทรุดตอนบอร์ดรับงานทั้ง I2S + BT |
+| เข้า `192.168.4.1` ไม่ได้ | AP เปิดเฉพาะตอนที่ยังต่อลำโพงไม่ได้ — ปิดลำโพง (หรือรอหลุด 30 วินาที) แล้วต่อ Wi-Fi `ESP32-A2DP-Setup` (รหัส `esp32cam`) |
+| `not enough free heap for the config portal` | heap ต่ำกว่า 32 KB (BT กำลังจอง buffer / I2S กำลังสตรีม) บอร์ดจะลองใหม่ทุก 10 วินาที — ถ้าไม่ขึ้นเลยให้รีบูตโดยที่ยังไม่เปิดลำโพง |
+| หน้าเว็บค้างหลังกด “บันทึก” | ปกติ: บอร์ดรีสตาร์ทหลังตอบกลับ 1.2 วินาที รอ ~10 วินาทีแล้วต่อ AP ใหม่ |
 
 ## หมายเหตุเรื่อง PSRAM / หน่วยความจำ
 
@@ -290,6 +354,17 @@ m_i2s_std_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
   เสียง 64 KB อยู่ใน internal RAM ซึ่งเร็วกว่าและปลอดภัยกับ DMA
   ถ้าต้องการเปิด: `idf.py menuconfig` → Component config → ESP PSRAM → Enable
 - heap ว่างหลัง BT ทำงาน ~71 KB — เพียงพอสำหรับ buffer 371 ms
+- Wi-Fi เปิดเฉพาะโหมดตั้งค่า และถูกตัดทิ้งก่อนเริ่มสตรีม ถ้าเปิดค้างจะเหลือ heap
+  ~40 KB ซึ่งไม่พอสำหรับ TX buffer ของ A2DP (4112 B × 15 packet)
+- ตอน AP เปิดอยู่ บอร์ดจะ **คืน ring buffer 64 KB ให้ระบบ** (โหมดตั้งค่าไม่มีเสียง
+  อยู่แล้วเพราะ gate ปิด) ทำให้ heap ในโหมดตั้งค่าเหลือ ~73 KB และจอง buffer คืน
+  ทันทีที่เริ่มเชื่อมต่อลำโพง — ถ้าไม่คืน `httpd` จะสร้าง session ไม่ได้
+  (`httpd_create: Failed to allocate memory for HTTP session data`)
+- อย่าลด `CONFIG_ESP_WIFI_MGMT_SBUF_NUM` / `DYNAMIC_*_BUFFER_NUM` ต่ำกว่าค่าใน
+  `sdkconfig.defaults` — ทดสอบแล้วว่า AP จะไม่ส่ง beacon ทำให้มือถือสแกนไม่เห็น
+- เพื่อให้แอปพอดี IRAM: ปิด `CONFIG_ESP_WIFI_IRAM_OPT` / `CONFIG_ESP_WIFI_RX_IRAM_OPT`
+  และลด Wi-Fi buffer ลง (ดู `sdkconfig.defaults`) — ไม่กระทบคุณภาพเสียงเพราะ Wi-Fi
+  ไม่ทำงานตอนสตรีม
 
 ## ข้อจำกัดที่ยังเหลือ
 

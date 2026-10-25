@@ -46,6 +46,10 @@
 #define APP_I2S_DATA_GPIO CONFIG_APP_I2S_DATA_GPIO
 #define APP_I2S_PCM_SHIFT_BITS CONFIG_APP_I2S_PCM_SHIFT_BITS
 
+// Boot time wiring check (pin_activity.c): how long BCLK/WS/DATA are sampled
+// as plain GPIOs before the receiver starts.
+#define APP_PIN_CHECK_WINDOW_MS CONFIG_APP_PIN_CHECK_WINDOW_MS
+
 #define APP_I2S_CHUNK_FRAMES 256
 #define APP_I2S_READ_TIMEOUT_MS 100
 #define APP_I2S_TASK_STACK 4096

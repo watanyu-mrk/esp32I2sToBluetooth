@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32-CAM → Bluetooth</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; padding: 16px; max-width: 560px;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.45;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 12px; }
+  h2 { font-size: 1rem; margin: 0 0 10px; }
+  section {
+    border: 1px solid #8884; border-radius: 10px;
+    padding: 14px; margin-bottom: 14px;
+  }
+  label { display: block; font-size: .85rem; opacity: .8; margin: 10px 0 4px; }
+  label.inline { display: flex; align-items: center; gap: 8px; font-size: .95rem; opacity: 1; }
+  input[type=text], input[type=number], select {
+    width: 100%; padding: 9px 10px; font-size: 1rem;
+    border: 1px solid #8886; border-radius: 8px; background: transparent; color: inherit;
+  }
+  .fixed { padding: 9px 10px; border: 1px dashed #8886; border-radius: 8px; font-size: .95rem; }
+  button {
+    font: inherit; padding: 9px 14px; border-radius: 8px;
+    border: 1px solid #8886; background: transparent; color: inherit; cursor: pointer;
+  }
+  button.primary { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .status { font-size: .9rem; padding: 10px 12px; border-radius: 8px; margin: 0 0 14px; }
+  .status.ok { background: #16a34a22; border: 1px solid #16a34a66; }
+  .status.warn { background: #d9770622; border: 1px solid #d9770666; }
+  .status.bad { background: #dc262622; border: 1px solid #dc262666; }
+  ul#devices { list-style: none; margin: 10px 0 0; padding: 0; }
+  ul#devices li { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid #8883; }
+  ul#devices li .pick { flex: 0 0 auto; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ul#devices li .meta { font-size: .78rem; opacity: .65; font-variant-numeric: tabular-nums; }
+  .hint { font-size: .8rem; opacity: .65; margin: 10px 0 0; }
+  footer { font-size: .78rem; opacity: .6; margin-top: 18px; }
+</style>
+</head>
+<body>
+<h1>ESP32-CAM → Bluetooth Speaker</h1>
+<p class="status" id="status">กำลังโหลด…</p>
+
+<section>
+  <h2>ลำโพง Bluetooth</h2>
+  <label for="target">ชื่อลำโพง (เชื่อมต่อตัวที่ชื่อขึ้นต้นด้วยข้อความนี้ — เว้นว่าง = ตัวแรกที่เจอ)</label>
+  <input id="target" type="text" maxlength="32" list="device-names" autocomplete="off" placeholder="เช่น BT Speaker">
+  <datalist id="device-names"></datalist>
+  <ul id="devices"></ul>
+  <p class="hint" id="scan-hint">กำลังค้นหาอุปกรณ์…</p>
+  <div class="row"><button type="button" id="rescan">ล้างรายการแล้วค้นหาใหม่</button></div>
+</section>
+
+<section>
+  <h2>บอร์ดนี้</h2>
+  <label for="local">ชื่อที่ประกาศผ่าน Bluetooth</label>
+  <input id="local" type="text" maxlength="32" autocomplete="off">
+  <label class="inline"><input type="checkbox" id="ssp"> ใช้ Secure Simple Pairing (SSP)</label>
+  <p class="hint">ปิดไว้สำหรับลำโพงรุ่นเก่าที่ใช้ PIN แบบเดิม</p>
+</section>
+
+<section>
+  <h2>เสียง</h2>
+  <label for="input_rate">Sample rate ที่รับจาก ESP32-S3 (I2S)</label>
+  <select id="input_rate">
+    <option value="44100">44100 Hz</option>
+    <option value="48000">48000 Hz</option>
+  </select>
+  <label>A2DP ส่งออกที่</label>
+  <div class="fixed" id="output_rate">44100 Hz</div>
+  <p class="hint">SBC encoder ของ Bluedroid รับ PCM 44100 Hz คงที่ จึงตั้งค่าฝั่งนี้ไม่ได้</p>
+  <label for="buffer_ms">ขนาด jitter buffer (50–2000 ms)</label>
+  <input id="buffer_ms" type="number" min="50" max="2000" step="10">
+</section>
+
+<div class="row">
+  <button id="save" class="primary">บันทึกและรีสตาร์ท</button>
+  <button id="reboot">รีสตาร์ทอย่างเดียว</button>
+</div>
+<p class="hint">หลังบันทึก บอร์ดจะรีสตาร์ท 1 รอบ และ AP นี้จะปิดเองเมื่อต่อลำโพงได้</p>
+
+<footer>
+  Wi-Fi: <strong>ESP32-A2DP-Setup</strong> · รหัส <strong>esp32cam</strong> · http://192.168.4.1/
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var fields = ["target", "local", "ssp", "input_rate", "buffer_ms"];
+  var loaded = false;
+
+  function $(id) { return document.getElementById(id); }
+
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function setStatus(message, kind) {
+    var el = $("status");
+    el.textContent = message;
+    el.className = "status " + kind;
+  }
+
+  function renderDevices(devices, scanning) {
+    var list = $("devices");
+    var names = $("device-names");
+    list.innerHTML = "";
+    names.innerHTML = "";
+
+    devices.forEach(function (device) {
+      var option = document.createElement("option");
+      option.value = device.name;
+      names.appendChild(option);
+
+      var row = document.createElement("li");
+      var pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "pick";
+      pick.textContent = device.name;
+      pick.addEventListener("click", function () {
+        $("target").value = device.name;
+        setStatus("เลือกลำโพง \"" + device.name + "\" แล้ว — กดบันทึกเพื่อใช้งาน", "warn");
+      });
+
+      var meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = device.addr + " · " + device.rssi + " dBm";
+
+      row.appendChild(pick);
+      row.appendChild(meta);
+      list.appendChild(row);
+    });
+
+    $("scan-hint").textContent = scanning
+      ? "กำลังค้นหาอุปกรณ์…"
+      : (devices.length
+          ? "แตะชื่อลำโพงเพื่อเลือก"
+          : "ยังไม่พบลำโพง — เปิดลำโพงให้อยู่ในโหมดจับคู่ แล้วรอสักครู่");
+  }
+
+  function render(state) {
+    setStatus(
+      "สถานะ Bluetooth: " + state.bt + (state.connected ? " — ต่ออยู่" : " — ยังไม่ต่อ"),
+      state.connected ? "ok" : "warn"
+    );
+    $("output_rate").textContent = state.settings.output_rate + " Hz";
+
+    if (!loaded) {
+      $("target").value = state.settings.target;
+      $("local").value = state.settings.local;
+      $("ssp").checked = state.settings.ssp;
+      $("input_rate").value = String(state.settings.input_rate);
+      $("buffer_ms").value = state.settings.buffer_ms;
+      loaded = true;
+    }
+
+    renderDevices(state.devices || [], state.scanning);
+  }
+
+  function fetchState() {
+    return fetch("/api/state", { cache: "no-store" })
+      .then(function (response) { return response.json(); })
+      .then(render)
+      .catch(function () {
+        setStatus("ขาดการเชื่อมต่อกับบอร์ด — AP อาจถูกปิดเพราะต่อลำโพงได้แล้ว",
+                  "bad");
+      });
+  }
+
+  function post(url, payload) {
+    return fetch(url, {
+      method: "POST",
+      headers: payload ? { "Content-Type": "application/json" } : {},
+      body: payload ? JSON.stringify(payload) : null
+    }).then(function (response) { return response.json(); });
+  }
+
+  $("save").addEventListener("click", function () {
+    var buffer = Number($("buffer_ms").value);
+    if (!isFinite(buffer) || buffer < 50 || buffer > 2000) {
+      setStatus("ขนาด buffer ต้องอยู่ระหว่าง 50–2000 ms", "warn");
+      return;
+    }
+
+    $("save").disabled = true;
+    post("/api/settings", {
+      target: $("target").value.trim(),
+      local: $("local").value.trim(),
+      ssp: $("ssp").checked,
+      input_rate: Number($("input_rate").value),
+      buffer_ms: buffer
+    }).then(function (result) {
+      if (result.ok) {
+        setStatus("บันทึกแล้ว กำลังรีสตาร์ท… (ถ้าหน้าเว็บค้างให้ปิดแล้วต่อ Wi-Fi ใหม่)", "ok");
+      } else {
+        setStatus("บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง", "bad");
+        $("save").disabled = false;
+      }
+    }).catch(function () {
+      setStatus("ติดต่อบอร์ดไม่ได้ระหว่างบันทึก", "bad");
+      $("save").disabled = false;
+    });
+  });
+
+  $("reboot").addEventListener("click", function () {
+    if (!window.confirm("รีสตาร์ทบอร์ดตอนนี้?")) return;
+    post("/api/reboot").catch(function () {});
+    setStatus("กำลังรีสตาร์ท…", "warn");
+  });
+
+  $("rescan").addEventListener("click", function () {
+    $("devices").innerHTML = "";
+    $("scan-hint").textContent = "กำลังค้นหาใหม่…";
+    post("/api/rescan").catch(function () {});
+  });
+
+  fetchState();
+  setInterval(fetchState, 2000);
+})();
+</script>
+</body>
+</html>
