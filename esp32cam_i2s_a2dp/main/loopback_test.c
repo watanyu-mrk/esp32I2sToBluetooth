@@ -1,5 +1,6 @@
 #include "loopback_test.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,6 +17,7 @@
 static const char *TAG = "loopback";
 
 #define TEST_FRAMES 128
+#define RECEIVE_FRAMES 192
 #define SEARCH_FRAMES 4096
 
 static int16_t expected_left(int frame) { return (int16_t)(1000 + frame * 3); }
@@ -162,6 +164,19 @@ bool loopback_test_run(int bclk_gpio, int ws_gpio, int data_gpio,
     return false;
   }
 
+  const bool resampled = sample_rate != APP_OUTPUT_SAMPLE_RATE;
+  const double step = (double)sample_rate / (double)APP_OUTPUT_SAMPLE_RATE;
+  // Pattern frames that fit in the pattern when it is resampled (the last
+  // input frame is only reachable through interpolation of the silence
+  // that follows it).
+  size_t pattern_frames = TEST_FRAMES;
+  if (resampled) {
+    pattern_frames = (size_t)floor((double)(TEST_FRAMES - 1) / step) + 1;
+  }
+  // Collect a little more than the pattern so the end of the ramp is visible.
+  size_t wanted = resampled ? pattern_frames + 8 : TEST_FRAMES;
+  if (wanted > RECEIVE_FRAMES) wanted = RECEIVE_FRAMES;
+
   size_t written = 0;
   err = i2s_channel_write(tx, slots, (size_t)TEST_FRAMES * APP_BYTES_PER_FRAME * 2,
                           &written, pdMS_TO_TICKS(1000));
@@ -174,39 +189,86 @@ bool loopback_test_run(int bclk_gpio, int ws_gpio, int data_gpio,
   i2s_del_channel(tx);
   free(slots);
 
-  // Look for the start of the pattern in what the receiver buffered.
+  // Look for the pattern in what the receiver buffered. With matching rates
+  // the first frame is exact; when the receiver resamples, the interpolation
+  // phase depends on where its first I2S read landed, so only the shape of
+  // the ramp (mirrored channels, density) can be checked.
   int16_t chunk[128 * APP_AUDIO_CHANNELS];
   size_t scanned = 0;
-  int16_t received[TEST_FRAMES * APP_AUDIO_CHANNELS];
+  int16_t received[RECEIVE_FRAMES * APP_AUDIO_CHANNELS];
   size_t received_frames = 0;
 
-  while (scanned < SEARCH_FRAMES && received_frames < TEST_FRAMES) {
+  while (scanned < SEARCH_FRAMES && received_frames < wanted) {
     size_t got = audio_buffer_read(chunk, 128);
     if (got == 0) break;
     scanned += got;
 
-    for (size_t i = 0; i < got && received_frames < TEST_FRAMES; i++) {
+    for (size_t i = 0; i < got && received_frames < wanted; i++) {
       if (received_frames == 0) {
-        if (chunk[i * 2] == expected_left(0) &&
-            chunk[i * 2 + 1] == expected_right(0)) {
-          received[0] = chunk[i * 2];
-          received[1] = chunk[i * 2 + 1];
-          received_frames = 1;
-        }
-      } else {
-        received[received_frames * 2] = chunk[i * 2];
-        received[received_frames * 2 + 1] = chunk[i * 2 + 1];
-        received_frames++;
+        bool start = resampled
+                         ? (chunk[i * 2] != 0 || chunk[i * 2 + 1] != 0)
+                         : (chunk[i * 2] == expected_left(0) &&
+                            chunk[i * 2 + 1] == expected_right(0));
+        if (!start) continue;
       }
+      received[received_frames * 2 + 0] = chunk[i * 2];
+      received[received_frames * 2 + 1] = chunk[i * 2 + 1];
+      received_frames++;
     }
   }
 
-  if (received_frames < TEST_FRAMES) {
+  if (received_frames < wanted) {
     ESP_LOGE(TAG,
-             "LOOPBACK FAIL: found %u/%d frames after scanning %u frames "
+             "LOOPBACK FAIL: found %u/%u frames after scanning %u frames "
              "(no signal, wrong pins, or wrong shift)",
-             (unsigned)received_frames, TEST_FRAMES, (unsigned)scanned);
+             (unsigned)received_frames, (unsigned)wanted, (unsigned)scanned);
     return false;
+  }
+
+  if (resampled) {
+    // Channels must stay mirrored, and the ramp must survive the conversion:
+    // 3 * step (~3.27) per output frame over about TEST_FRAMES / step frames.
+    // A missing or wrong resampler breaks the density, a swapped channel pair
+    // breaks the mirror.
+    size_t best_run = 0;
+    size_t run = 0;
+    for (size_t i = 0; i < received_frames; i++) {
+      int16_t left = received[i * 2];
+      int16_t right = received[i * 2 + 1];
+      if (right != (int16_t)-left) {
+        ESP_LOGE(TAG,
+                 "LOOPBACK FAIL (resampled): L/R order broken at frame %u "
+                 "(L=%d R=%d)",
+                 (unsigned)i, left, right);
+        return false;
+      }
+      if (i == 0) continue;
+
+      int delta = (int)left - (int)received[(i - 1) * 2];
+      if (delta >= 3 && delta <= 4) {
+        run++;
+        if (run > best_run) best_run = run;
+      } else {
+        run = 0;
+      }
+    }
+
+    // best_run counts steps, so the ramp spans best_run + 1 frames.
+    size_t ramp_frames = best_run + 1;
+    if (ramp_frames + 6 < pattern_frames || ramp_frames > pattern_frames + 6) {
+      ESP_LOGE(TAG,
+               "LOOPBACK FAIL (resampled): ramp is %u frames, expected ~%u "
+               "(resampler not applied, or wrong ratio)",
+               (unsigned)ramp_frames, (unsigned)pattern_frames);
+      return false;
+    }
+
+    ESP_LOGI(TAG,
+             "LOOPBACK PASS (resampled %u -> %d Hz): %u frame ramp, ~%.2f "
+             "per output frame (shift=%d, L/R order correct)",
+             (unsigned)sample_rate, APP_OUTPUT_SAMPLE_RATE,
+             (unsigned)ramp_frames, 3.0 * step, shift_bits);
+    return resampler_ok;
   }
 
   for (size_t i = 0; i < TEST_FRAMES; i++) {

@@ -118,6 +118,7 @@ Smallest app partition is 0x300000 bytes. 0x22cb30 bytes (72%) free.
 | I2S input sample rate | 44100 | ต้องตรงกับที่ S3 ส่ง; ถ้าไม่ตรงจะ resample อัตโนมัติ |
 | I2S BCLK/WS/DATA GPIO | 14/13/4 | ตามผังด้านบน |
 | PCM shift bits | 16 | 16 = PCM16 อยู่ในครึ่งบนของ slot 32-bit (ตามที่ ESP32-audioI2S ทำ) |
+| Secure Simple Pairing (SSP) | ปิด | เปิดเมื่อลำโพงรุ่นใหม่ไม่ยอมจับคู่ด้วย PIN แบบ legacy (ดูหัวข้อ 2.1) |
 | Audio buffer | 300 ms | จริงได้ 16384 frames = **371 ms** (ปัดเป็น power of 2) |
 | Loopback self test | ปิด | เปิดเพื่อทดสอบเส้นทาง I2S ตอนบูต |
 | Test tone | ปิด | สร้างโทน 1 kHz แทน I2S (ทดสอบ Bluetooth โดยไม่ต้องมี S3) |
@@ -144,10 +145,55 @@ I (817) loopback: LOOPBACK PASS: 128 frames verified (32-bit slots, shift=16, L/
   จึงยืนยัน "ไปป์ไลน์ + ลำดับช่อง" ได้ แต่ไม่ได้ยืนยันว่าฝั่ง S3 วางบิตแบบนั้นจริง
   (ดูหัวข้อ "ตรวจ 32-bit slot" ด้านล่าง)
 
+#### 1.1) Self-test เส้นทาง resample (input 48000 → A2DP 44100)
+
+ตั้ง *I2S input sample rate* = 48000 (เปิด *Loopback self test* ด้วย) ⇒ ข้อมูลจริง
+จะผ่าน `resampler_process()` ในเส้นทางเสียง แล้วเข้าสู่ audio buffer. self-test จะ
+ตรวจ "ความหนาแน่น" ของ ramp แทนการเทียบค่าตรง ๆ เพราะ interpolation อาจเริ่มที่
+ตำแหน่งเศษส่วนใดก็ได้ (ขึ้นกับว่า I2S read แรกไปตกที่ frame ไหน)
+
+```
+I (826) loopback: LOOPBACK PASS (resampled 48000 -> 44100 Hz): 117 frame ramp, ~3.27 per output frame (shift=16, L/R order correct)
+```
+
+- `117 frame ramp` = 128 input frame ที่อัตราส่วน 44.1/48 ควรเหลือ ≈117 frame
+  (เกณฑ์ที่ยอมรับ ±6 frame)
+- `~3.27 per output frame` = ramp เพิ่ม 3 ต่อ input frame × step 1.088
+- ถ้า resampler ไม่ถูกเรียก หรืออัตราส่วนผิด จำนวน frame ของ ramp จะหลุดเกณฑ์
+  ทันที (เช่นไม่ resample เลยจะได้ 128 frame)
+- ทุก frame ยังถูกตรวจว่า R = -L (ลำดับ L/R ไม่สลับ) รวมช่วงหัว/ท้ายของ ramp
+
 ### 2) ทดสอบ Bluetooth ด้วยโทน 1 kHz (ไม่ต้องมี S3)
 
 เปิด `Test tone`, ตั้งชื่อลำโพงให้ถูก, flash แล้วเปิดลำโพง ⇒ ควรได้ยินเสียงโทน
 และ log จะขึ้น `tone: feeding 1000 Hz sine to the A2DP callback`
+
+#### 2.1) ถ้าลำโพงไม่ยอมจับคู่ — เปิด Secure Simple Pairing (SSP)
+
+ลำโพงรุ่นใหม่ส่วนใหญ่เลิกใช้ Legacy Pairing (PIN `1234`) แล้ว และจะจับคู่ผ่าน
+**Secure Simple Pairing** เท่านั้น อาการคือเห็น `BT=Connecting` / หลุดบ่อย
+หรือ discovery วนซ้ำโดยไม่เคยขึ้น `Connected`
+
+เปิด `idf.py menuconfig` → *ESP32-CAM I2S to A2DP bridge* →
+**Use Secure Simple Pairing (SSP)** ⇒ build/flash ใหม่ แล้ว log ตอนบูตจะเป็น
+
+```
+I (535) a2dp_src: pairing: SSP enabled (numeric value auto-confirmed)
+```
+
+สิ่งที่เกิดขึ้น:
+
+- ไลบรารีตั้ง IO capability เป็น `ESP_BT_IO_CAP_IO` (มีจอ + ปุ่ม yes/no) และ
+  ตั้ง `ssp_en` ใน bluedroid config ไว้แล้ว
+- ESP32-CAM ไม่มีจอและไม่มีคีย์แพด ⇒ เมื่อมี `ESP_BT_GAP_CFM_REQ_EVT`
+  (numeric comparison) บอร์ดจะตอบ "ยืนยัน" ให้อัตโนมัติ และ
+  `ESP_BT_GAP_KEY_NOTIF_EVT` (passkey ที่ต้องให้อีกฝ่ายกรอก) จะถูก log ไว้เฉย ๆ
+- ถ้าลำโพงเก่าจับคู่ด้วย PIN ได้อยู่แล้ว ไม่ต้องเปิดตัวเลือกนี้ (ค่าเริ่มต้น = ปิด)
+  เพราะการเปิด SSP จะเปลี่ยนวิธีจับคู่ของทั้งบอร์ด
+
+> ยังไม่ได้ทดสอบกับลำโพงจริงในรอบนี้ (ไม่มีฮาร์ดแวร์) — ยืนยันได้แค่ว่าเปิดแล้ว
+> stack ยังขึ้นปกติ (`A2DP Enable with AVRC`), heap เท่าเดิม และค่า IO capability
+> ถูกตั้งก่อน `start()` ตามที่ไลบรารีต้องการ
 
 ### 3) ทดสอบระบบจริง
 
@@ -166,8 +212,10 @@ I (817) loopback: LOOPBACK PASS: 128 frames verified (32-bit slots, shift=16, L/
 | Flash ทาง COM6 (esptool 4.12) | ✅ ผ่าน, hash verified |
 | บูต + Bluetooth Classic + A2DP/AVRCP init | ✅ `BT enabled`, `A2DP Enable with AVRC` |
 | I2S slave RX เริ่มทำงาน (core 1) | ✅ `slave RX: BCLK=14 WS=13 DIN=4, 32-bit slots, shift=16` |
-| Loopback self-test (128 frames) | ✅ PASS |
-| Resampler 48k→44.1k self-test | ✅ PASS |
+| Loopback self-test 44100 → 44100 (128 frames, เทียบค่าตรงทุก sample) | ✅ PASS |
+| Loopback self-test 48000 → 44100 (117 frame ramp ผ่านเส้นทาง resample จริง) | ✅ PASS |
+| ตัวเลือก SSP เปิด/ปิด (build + บูตบนบอร์ด) | ✅ ผ่านทั้งสองแบบ (`SSP enabled`, `SSP disabled`), heap ~71 KB เท่าเดิม |
+| Resampler 48k→44.1k self-test (ระดับฟังก์ชัน) | ✅ PASS |
 | ค้นหาลำโพง (discovery) | ⚠️ เริ่ม discovery ซ้ำทุก ~12.8 วินาที แต่ไม่พบอุปกรณ์ (ไม่มีลำโพงเปิดอยู่ใกล้บอร์ด) |
 | ส่งเสียงไปลำโพงจริง (end-to-end) | ❌ ยังทดสอบไม่ได้ — ไม่มีลำโพง Bluetooth ให้จับคู่ |
 | รับข้อมูลจาก ESP32-S3 จริง | ❌ ยังทดสอบไม่ได้ — ไม่ได้ต่อ S3 เข้ากับบอร์ด |
@@ -230,7 +278,7 @@ m_i2s_std_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
 | `I2S 0 B/s` ตลอด | เช่นเดียวกับข้างบน; ลองเปิด loopback test เพื่อแยกฝั่ง CAM |
 | เสียงแตก/กระตุก | buffer overflow (ดู `drop`) — ลดงานฝั่ง S3 หรือเพิ่ม `Audio buffer`; ตรวจ GND ร่วม |
 | เงียบแต่ `BT=Streaming` | `PCM shift bits` ผิด หรือ S3 ส่ง 48k แต่ตั้ง input เป็น 44.1k |
-| ไม่ยอมจับคู่ | ตั้งชื่อลำโพงให้ตรง (เทียบแบบ prefix) และเปิดลำโพงให้อยู่ในโหมด discoverable; SSP ถูกปิดโดยปริยาย (ใช้ PIN `1234` แบบ legacy) — ถ้าลำโพงต้องการ SSP ให้เพิ่ม `set_ssp_enabled(true)` ใน `a2dp_source.cpp` |
+| ไม่ยอมจับคู่ | ตั้งชื่อลำโพงให้ตรง (เทียบแบบ prefix) และเปิดลำโพงให้อยู่ในโหมด discoverable; ถ้าลำโพงรุ่นใหม่ต้องการ SSP ให้เปิด *Use Secure Simple Pairing (SSP)* ใน menuconfig (ดูหัวข้อ 2.1) — ค่าเริ่มต้นยังใช้ PIN `1234` แบบ legacy |
 | จำ peer เก่า | แก้แล้ว: ล้าง NVS ตอนบูตเมื่อระบุชื่อลำโพง |
 | flash ไม่ได้ | ESP32-CAM ต้องดึง GPIO0 ลง GND ตอนอัปโหลด (บอร์ดรุ่นมี USB-serial ทำเอง) |
 
@@ -247,4 +295,7 @@ m_i2s_std_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
   ไม่ได้ต่อ S3 ในรอบทดสอบนี้
 - ยังไม่ได้ทดสอบต่อเนื่อง 30 นาที (clock drift ระหว่าง S3 กับ BT stack จะถูกกลืน
   ด้วย buffer 371 ms แต่ยังไม่ได้วัดจริง)
-- ยังไม่ได้ทดสอบกับสถานี 48 kHz ผ่าน I2S จริง (ทดสอบเฉพาะตัว resampler บนบอร์ด)
+- เส้นทาง resample 48k→44.1k ตรวจแล้วบนบอร์ด (self-test ผ่าน) แต่ยังไม่ได้
+  ทดสอบกับสถานี 48 kHz จริงที่ส่งมาจาก ESP32-S3
+- เสียงจริงจาก S3 → CAM → ลำโพง และ soak test 30 นาที ยังค้างอยู่ เพราะไม่มี
+  ลำโพง Bluetooth และยังไม่ได้ต่อ S3 เข้ากับบอร์ด

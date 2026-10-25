@@ -14,6 +14,18 @@ config APP_BT_TARGET_NAME
         starts with this string. Leave empty to connect to the first
         discoverable A2DP sink.
 
+config APP_BT_SSP
+    bool "Use Secure Simple Pairing (SSP)"
+    default n
+    help
+        Enable Bluetooth Secure Simple Pairing for speakers that reject the
+        legacy PIN handshake. The ESP32-CAM has no display and no keypad, so
+        the numeric comparison value is accepted automatically (Just Works /
+        auto-confirm) and passkey notifications are only logged.
+
+        Leave this off for older speakers that only support legacy pairing
+        with a PIN code.
+
 choice APP_OUTPUT_RATE
     prompt "A2DP sample rate (PCM sent to the speaker)"
     default APP_OUTPUT_RATE_44100

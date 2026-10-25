@@ -17,6 +17,12 @@
 #define APP_BT_TARGET_NAME CONFIG_APP_BT_TARGET_NAME
 #define APP_BT_RECONNECT_TRIES 1000
 
+#if CONFIG_APP_BT_SSP
+#define APP_BT_SSP_ENABLED 1
+#else
+#define APP_BT_SSP_ENABLED 0
+#endif
+
 // ---------------------------------------------------------------------------
 // Sample rates
 // ---------------------------------------------------------------------------

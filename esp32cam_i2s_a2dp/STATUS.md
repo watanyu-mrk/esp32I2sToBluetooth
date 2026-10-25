@@ -1,6 +1,7 @@
 # สถานะงาน (handoff) — กลับมาทำต่อจากไฟล์นี้
 
 อัปเดตล่าสุด: 25 ต.ค. 2026 · บอร์ดทดสอบ: ESP32-CAM (ESP32-D0WD) ที่ **COM6**
+(รอบล่าสุด: เพิ่มตัวเลือก SSP — build/flash และบูตผ่านทั้งโหมดเปิด/ปิด)
 
 อ่าน `README.md` สำหรับผังสาย/ตัวเลือก/menuconfig ทั้งหมด — ไฟล์นี้สรุปแค่ว่า
 **ทำอะไรเสร็จแล้ว, อะไรยังไม่ได้ทำ, และเริ่มต่อยังไง**
@@ -12,9 +13,10 @@
 | โค้ดบริดจ์ I2S → A2DP (`main/`) | ✅ เขียนครบ, build ผ่าน |
 | Flash ลงบอร์ด COM6 | ✅ ผ่าน (image 865,488 B) |
 | บูต + Bluetooth Classic + A2DP/AVRCP | ✅ ผ่าน |
-| Self-test เส้นทางรับข้อมูล (loopback) | ✅ PASS (128 frames, L/R ถูก) |
-| Self-test resampler 48k→44.1k | ✅ PASS (1880/1881.6 frames) |
-| จับคู่ + ส่งเสียงไปลำโพงจริง | ❌ ยังไม่ได้ทดสอบ (ไม่มีลำโพง BT) |
+| Self-test เส้นทางรับข้อมูล (loopback, 44.1k) | ✅ PASS (128 frames, L/R ถูก) |
+| Self-test เส้นทาง resample (loopback, 48k→44.1k) | ✅ PASS (117 frame ramp, ~3.27/frame) |
+| Self-test resampler 48k→44.1k (ระดับฟังก์ชัน) | ✅ PASS (1880/1881.6 frames) |
+| จับคู่ + ส่งเสียงไปลำโพงจริง | ❌ ยังไม่ได้ทดสอบ (ไม่มีลำโพง BT) — มีตัวเลือก SSP แล้ว |
 | รับ PCM จาก ESP32-S3 จริง | ❌ ยังไม่ได้ทดสอบ (ยังไม่ต่อสาย) |
 | Soak test 30 นาที | ❌ ยังไม่ได้ทำ |
 | แก้ฝั่งโปรเจกต์ S3 (`setOutputSampleRate`) | ❌ ยังไม่ได้แก้ (อยู่นอก repo นี้) |
@@ -26,6 +28,7 @@
    *Bluetooth speaker name to connect to* (ต้องเป็น prefix)
 2. **ทดสอบ Bluetooth แบบไม่ต้องมี S3** — เปิด *Use a generated 1 kHz test tone*
    แล้ว flash; เปิดลำโพงตอนบูต ควรได้ยินโทน 1 kHz
+   (ถ้าจับคู่ไม่ติดให้เปิด *Use Secure Simple Pairing (SSP)* ดูหัวข้อ 2.1 ใน README)
 3. **ต่อสาย S3 → CAM** ตามผังใน README (GPIO1/2/40 → CAM 14/13/4 + GND ร่วม)
    แล้วค่อยปิด test tone กลับมาใช้ I2S
 4. **แก้ฝั่ง S3** เพิ่ม `audio.setOutputSampleRate(Audio::SR_44100);` ใน `setup()`
@@ -54,6 +57,7 @@ source /c/esp/idf-env.sh                          # ตั้ง PATH/IDF_PATH
 
 ```
 CONFIG_APP_BT_TARGET_NAME="BT-Speaker"   # ← ยังต้องแก้
+# CONFIG_APP_BT_SSP is not set             # เปิดถ้าลำโพงรุ่นใหม่ต้องการ SSP
 CONFIG_APP_OUTPUT_RATE_44100=y
 CONFIG_APP_INPUT_RATE_44100=y
 CONFIG_APP_I2S_BCLK_GPIO=14  WS=13  DATA=4
@@ -69,6 +73,29 @@ CONFIG_APP_AUDIO_BUFFER_MS=300           # ได้จริง 16384 frames = 
 บอร์ดจำ peer เก่าใน NVS (`a7:d3:a7:f2:59:97`) แล้ววน reconnect หา peer นั้น
 ไม่ยอมค้นหาลำโพงที่ตั้งไว้ ⇒ `main/main.cpp` ล้าง peer ที่เก็บไว้ตอนบูตเมื่อมี
 การระบุชื่อลำโพง (log: `a2dp_src: cleared the stored peer address`)
+
+## สิ่งที่เพิ่งทำในรอบนี้
+
+- เพิ่มตัวเลือก **Use Secure Simple Pairing (SSP)** (`CONFIG_APP_BT_SSP`, ค่าเริ่มต้น
+  ปิด) ใน `main/Kconfig.projbuild` → `APP_BT_SSP_ENABLED` → เรียก
+  `set_ssp_enabled()` **ก่อน** `start()` ใน `main/a2dp_source.cpp` เพื่อให้ลำโพงรุ่น
+  ใหม่ที่เลิกใช้ Legacy PIN จับคู่ได้; ตอนบูต log บอกสถานะ
+  (`a2dp_src: pairing: SSP enabled (numeric value auto-confirmed)`)
+- บอร์ดไม่มีจอ/คีย์แพด ⇒ numeric comparison ถูก auto-confirm, ส่วน passkey ที่ต้อง
+  กรอกจะถูก log เฉย ๆ (ข้อจำกัดของไลบรารี)
+- ทดสอบบนบอร์ดจริง: build/flash ผ่านทั้ง `CONFIG_APP_BT_SSP=y` และค่าเริ่มต้น (ปิด),
+  boot ขึ้น `A2DP Enable with AVRC` ปกติ heap ~71 KB เท่าเดิม แล้ว flash กลับเป็น
+  ค่า default (SSP ปิด)
+- ยัง**ไม่ได้**ทดสอบจับคู่กับลำโพงจริง (ไม่มีฮาร์ดแวร์)
+
+- เพิ่มการตรวจเส้นทาง resample ใน `main/loopback_test.c`: เมื่อ *I2S input sample
+  rate* ≠ *A2DP sample rate* ตัวรับจะ resample จริง self-test จึงเปลี่ยนไปตรวจ
+  "ความหนาแน่น" ของ ramp (จำนวน frame ≈ 128 × out/in, step 3..4 ต่อ frame)
+  พร้อมเช็ค R = -L ทุก frame แทนการเทียบค่าตรง ซึ่งใช้ไม่ได้เพราะ interpolation
+  เริ่มที่ตำแหน่งเศษส่วนได้ (`LOOPBACK PASS (resampled 48000 -> 44100 Hz): ...`)
+- ทดสอบบนบอร์ดจริงทั้งสองแบบ: 44100→44100 PASS (128 frames) และ 48000→44100
+  PASS (117 frame ramp) แล้ว flash กลับเป็นค่า default (44100, loopback ปิด)
+- ยัง**ไม่ได้**ทดสอบเสียงจริงกับลำโพง Bluetooth หรือ S3 (ไม่มีฮาร์ดแวร์)
 
 ## ข้อสังเกตที่เจอตอนทดสอบ (ยังไม่ต้องแก้)
 

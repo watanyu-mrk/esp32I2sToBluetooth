@@ -75,6 +75,14 @@ void a2dp_source_start(const char *target_name) {
   s_source.set_auto_reconnect(true, APP_BT_RECONNECT_TRIES);
   s_source.set_data_callback(provide_audio);
 
+  // SSP must be configured before start(): the library applies the IO
+  // capability to Bluedroid while bringing the stack up. Many modern speakers
+  // refuse the legacy PIN handshake and only pair over Secure Simple Pairing.
+  s_source.set_ssp_enabled(APP_BT_SSP_ENABLED != 0);
+  ESP_LOGI(TAG, "pairing: SSP %s",
+           APP_BT_SSP_ENABLED ? "enabled (numeric value auto-confirmed)"
+                              : "disabled (legacy PIN only)");
+
   if (target_name != nullptr && target_name[0] != '\0') {
     clear_stored_peer();
     ESP_LOGI(TAG, "local name '%s', looking for sink '%s'", APP_BT_DEVICE_NAME,
