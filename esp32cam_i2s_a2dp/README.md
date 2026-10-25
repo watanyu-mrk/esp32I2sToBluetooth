@@ -217,7 +217,8 @@ I (535) a2dp_src: pairing: SSP enabled (numeric value auto-confirmed)
 | ตัวเลือก SSP เปิด/ปิด (build + บูตบนบอร์ด) | ✅ ผ่านทั้งสองแบบ (`SSP enabled`, `SSP disabled`), heap ~71 KB เท่าเดิม |
 | Resampler 48k→44.1k self-test (ระดับฟังก์ชัน) | ✅ PASS |
 | ค้นหาลำโพง (discovery) | ⚠️ เริ่ม discovery ซ้ำทุก ~12.8 วินาที แต่ไม่พบอุปกรณ์ (ไม่มีลำโพงเปิดอยู่ใกล้บอร์ด) |
-| ส่งเสียงไปลำโพงจริง (end-to-end) | ❌ ยังทดสอบไม่ได้ — ไม่มีลำโพง Bluetooth ให้จับคู่ |
+| จับคู่กับลำโพงจริง "BT Speaker" (`00:58:56:74:31:f3`, RSSI -60) | ✅ `Target device found` → `a2dp connecting to peer` → `connected` |
+| เริ่มเล่นเสียง (tone 1 kHz) ผ่าน A2DP | ⚠️ `audio state: started` + `BT=Streaming`, tone ป้อน PCM และ BT บริโภคทัน (buffer 2–16%, underflow คงที่) แต่หลัง ~10–15 s link หลุด (heap หมดจาก TX buffer 4112 B × 15) — ยังไม่ได้ยืนยันเสียงด้วยหู |
 | รับข้อมูลจาก ESP32-S3 จริง | ❌ ยังทดสอบไม่ได้ — ไม่ได้ต่อ S3 เข้ากับบอร์ด |
 | ทดสอบต่อเนื่อง 30 นาที | ❌ ยังไม่ได้ทำ |
 
@@ -278,6 +279,7 @@ m_i2s_std_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
 | `I2S 0 B/s` ตลอด | เช่นเดียวกับข้างบน; ลองเปิด loopback test เพื่อแยกฝั่ง CAM |
 | เสียงแตก/กระตุก | buffer overflow (ดู `drop`) — ลดงานฝั่ง S3 หรือเพิ่ม `Audio buffer`; ตรวจ GND ร่วม |
 | เงียบแต่ `BT=Streaming` | `PCM shift bits` ผิด หรือ S3 ส่ง 48k แต่ตั้ง input เป็น 44.1k |
+| `BT_OSI: malloc failed ... size=4112` + `btc_media_aa_prep_sbc_2_send no buffer TxCnt 15` | stack จอง TX buffer 4112 B ต่อ packet แล้ว peer ไม่ drain / link อ่อน ⇒ heap หมดแล้วหลุด — ลด `Audio buffer` เพื่อคืน RAM และดูระยะ/RSSI ของลำโพง |
 | ไม่ยอมจับคู่ | ตั้งชื่อลำโพงให้ตรง (เทียบแบบ prefix) และเปิดลำโพงให้อยู่ในโหมด discoverable; ถ้าลำโพงรุ่นใหม่ต้องการ SSP ให้เปิด *Use Secure Simple Pairing (SSP)* ใน menuconfig (ดูหัวข้อ 2.1) — ค่าเริ่มต้นยังใช้ PIN `1234` แบบ legacy |
 | จำ peer เก่า | แก้แล้ว: ล้าง NVS ตอนบูตเมื่อระบุชื่อลำโพง |
 | flash ไม่ได้ | ESP32-CAM ต้องดึง GPIO0 ลง GND ตอนอัปโหลด (บอร์ดรุ่นมี USB-serial ทำเอง) |

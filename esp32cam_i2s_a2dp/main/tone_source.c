@@ -18,8 +18,11 @@ static TaskHandle_t s_task;
 static void tone_task(void *arg) {
   audio_gate_t gate = (audio_gate_t)arg;
   const size_t frames = APP_TONE_CHUNK_FRAMES;
-  int16_t *chunk =
-      heap_caps_malloc(frames * APP_BYTES_PER_FRAME, MALLOC_CAP_INTERNAL);
+  // MALLOC_CAP_8BIT is required: plain internal RAM may include IRAM, which
+  // only supports 32-bit accesses, so the int16_t stores below would fault
+  // with a LoadStoreError.
+  int16_t *chunk = heap_caps_malloc(frames * APP_BYTES_PER_FRAME,
+                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if (chunk == NULL) {
     ESP_LOGE(TAG, "cannot allocate tone buffer");
     s_task = NULL;

@@ -15,6 +15,20 @@ static const char *TAG = "a2dp_src";
 static BluetoothA2DPSource s_source;
 static bool s_started = false;
 
+// The library only refreshes the cached audio state that get_audio_state()
+// returns - and therefore that a2dp_source_is_streaming() depends on - inside
+// its audio state event handler, and it only does so when a callback is
+// registered. Without one the bridge stays "suspended" forever and never feeds
+// any PCM, so this no-op handler is required even though it only logs.
+static void on_audio_state_changed(esp_a2d_audio_state_t state, void *obj) {
+  (void)obj;
+  // In IDF 5.x ESP_A2D_AUDIO_STATE_STOPPED is an alias of ..._SUSPEND, so only
+  // STARTED is worth telling apart.
+  ESP_LOGI(TAG, "audio state: %s",
+           state == ESP_A2D_AUDIO_STATE_STARTED ? "started"
+                                                : "suspended/stopped");
+}
+
 // Called by the Bluetooth stack whenever it needs more PCM. It must return
 // quickly: read what is buffered, pad the rest with silence, and never block.
 static int32_t provide_audio(uint8_t *data, int32_t len) {
@@ -74,6 +88,9 @@ void a2dp_source_start(const char *target_name) {
   s_source.set_local_name(APP_BT_DEVICE_NAME);
   s_source.set_auto_reconnect(true, APP_BT_RECONNECT_TRIES);
   s_source.set_data_callback(provide_audio);
+
+  // Required for is_streaming() to ever become true (see the handler above).
+  s_source.set_on_audio_state_changed(on_audio_state_changed);
 
   // SSP must be configured before start(): the library applies the IO
   // capability to Bluedroid while bringing the stack up. Many modern speakers
