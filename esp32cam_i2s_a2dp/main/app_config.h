@@ -17,6 +17,10 @@
 #define APP_BT_TARGET_NAME CONFIG_APP_BT_TARGET_NAME
 #define APP_BT_RECONNECT_TRIES 1000
 
+// How long the bridge keeps trying to reach a speaker before it gives up on
+// Bluetooth and switches to the Wi-Fi config portal.
+#define APP_CONFIG_PORTAL_DELAY_MS (CONFIG_APP_PORTAL_DELAY_S * 1000)
+
 #if CONFIG_APP_BT_SSP
 #define APP_BT_SSP_ENABLED 1
 #else

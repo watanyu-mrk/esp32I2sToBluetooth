@@ -77,6 +77,9 @@ static esp_err_t state_get(httpd_req_t *req) {
   cJSON_AddStringToObject(root, "bt", a2dp_source_state());
   cJSON_AddBoolToObject(root, "connected", a2dp_source_is_connected());
   cJSON_AddBoolToObject(root, "scanning", a2dp_source_is_scanning());
+  // Bluetooth is shut down in config mode, so the page cannot ask for a new
+  // search: the device list is whatever the boot-time discovery found.
+  cJSON_AddBoolToObject(root, "bt_off", a2dp_source_is_shut_down());
 
   cJSON *json_settings = cJSON_AddObjectToObject(root, "settings");
   cJSON_AddStringToObject(json_settings, "target", settings->target_name);
@@ -172,7 +175,9 @@ static esp_err_t settings_post(httpd_req_t *req) {
 }
 
 static esp_err_t rescan_post(httpd_req_t *req) {
-  bt_scan_clear();
+  // With Bluetooth released there is nothing left that could discover devices,
+  // so keep the list from the search that ran before the portal opened.
+  if (!a2dp_source_is_shut_down()) bt_scan_clear();
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"ok\":true}");
 }

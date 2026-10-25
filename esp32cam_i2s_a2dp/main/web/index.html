@@ -84,7 +84,7 @@
   <button id="save" class="primary">บันทึกและรีสตาร์ท</button>
   <button id="reboot">รีสตาร์ทอย่างเดียว</button>
 </div>
-<p class="hint">หลังบันทึก บอร์ดจะรีสตาร์ท 1 รอบ และ AP นี้จะปิดเองเมื่อต่อลำโพงได้</p>
+<p class="hint">หลังบันทึก บอร์ดจะรีสตาร์ท 1 รอบ แล้วกลับไปโหมด Bluetooth (AP นี้จะหายไป)</p>
 
 <footer>
   Wi-Fi: <strong>ESP32-A2DP-Setup</strong> · รหัส <strong>esp32cam</strong> · http://192.168.4.1/
@@ -111,7 +111,7 @@
     el.className = "status " + kind;
   }
 
-  function renderDevices(devices, scanning) {
+  function renderDevices(devices, scanning, btOff) {
     var list = $("devices");
     var names = $("device-names");
     list.innerHTML = "";
@@ -141,18 +141,25 @@
       list.appendChild(row);
     });
 
+    $("rescan").disabled = btOff;
     $("scan-hint").textContent = scanning
       ? "กำลังค้นหาอุปกรณ์…"
       : (devices.length
           ? "แตะชื่อลำโพงเพื่อเลือก"
-          : "ยังไม่พบลำโพง — เปิดลำโพงให้อยู่ในโหมดจับคู่ แล้วรอสักครู่");
+          : (btOff
+              ? "Bluetooth ปิดอยู่ (โหมดตั้งค่า) — รายการนี้มาจากการค้นหาก่อนหน้า ถ้าไม่มีชื่อที่ต้องการให้พิมพ์เอง"
+              : "ยังไม่พบลำโพง — เปิดลำโพงให้อยู่ในโหมดจับคู่ แล้วรอสักครู่"));
   }
 
   function render(state) {
-    setStatus(
-      "สถานะ Bluetooth: " + state.bt + (state.connected ? " — ต่ออยู่" : " — ยังไม่ต่อ"),
-      state.connected ? "ok" : "warn"
-    );
+    if (state.bt_off) {
+      setStatus("โหมดตั้งค่า Wi-Fi — Bluetooth ถูกปิดเพื่อให้ Wi-Fi ใช้วิทยุได้เต็มที่ (บันทึกแล้วบอร์ดจะรีสตาร์ทกลับไปโหมด Bluetooth)", "warn");
+    } else {
+      setStatus(
+        "สถานะ Bluetooth: " + state.bt + (state.connected ? " — ต่ออยู่" : " — ยังไม่ต่อ"),
+        state.connected ? "ok" : "warn"
+      );
+    }
     $("output_rate").textContent = state.settings.output_rate + " Hz";
 
     if (!loaded) {
@@ -164,7 +171,7 @@
       loaded = true;
     }
 
-    renderDevices(state.devices || [], state.scanning);
+    renderDevices(state.devices || [], state.scanning, state.bt_off);
   }
 
   function fetchState() {
@@ -172,7 +179,7 @@
       .then(function (response) { return response.json(); })
       .then(render)
       .catch(function () {
-        setStatus("ขาดการเชื่อมต่อกับบอร์ด — AP อาจถูกปิดเพราะต่อลำโพงได้แล้ว",
+        setStatus("ขาดการเชื่อมต่อกับบอร์ด — ต่อ Wi-Fi ESP32-A2DP-Setup แล้วโหลดหน้าใหม่",
                   "bad");
       });
   }
@@ -219,6 +226,7 @@
   });
 
   $("rescan").addEventListener("click", function () {
+    if ($("rescan").disabled) return;
     $("devices").innerHTML = "";
     $("scan-hint").textContent = "กำลังค้นหาใหม่…";
     post("/api/rescan").catch(function () {});

@@ -127,6 +127,21 @@ config APP_TEST_TONE
     help
         Lets you verify the Bluetooth path without the ESP32-S3 connected.
 
+config APP_PORTAL_DELAY_S
+    int "Start the Wi-Fi config portal after this many seconds without a speaker"
+    default 180
+    range 10 3600
+    help
+        The board boots straight into Bluetooth and never raises the Wi-Fi
+        config portal while it is still trying to reach a speaker: Wi-Fi and
+        Bluetooth Classic share the radio and the heap. Only after this long
+        without a connected speaker does it shut the Bluetooth stack down
+        (releasing its memory to the Wi-Fi stack) and start the access point.
+
+        Bluetooth cannot be started again in that boot, so the portal stays up
+        until the settings are saved (which reboots the board) or the board is
+        restarted.
+
 config APP_STATS_INTERVAL_MS
     int "Status log interval (ms)"
     default 5000

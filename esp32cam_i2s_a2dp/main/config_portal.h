@@ -1,7 +1,7 @@
 // AP mode configuration portal: raises a Wi-Fi access point with a small web
-// page for the Bluetooth settings. It is only meant to run while the bridge is
-// not connected, so the Wi-Fi stack does not compete with A2DP for the radio
-// and for heap.
+// page for the Bluetooth settings. It is only meant to run after the bridge has
+// given up on finding a speaker and shut Bluetooth down, so the Wi-Fi stack
+// gets the radio and the heap for itself.
 #pragma once
 
 #include <stdbool.h>

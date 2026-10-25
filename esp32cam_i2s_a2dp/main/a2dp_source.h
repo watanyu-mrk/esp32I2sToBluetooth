@@ -20,12 +20,21 @@ bool a2dp_source_is_streaming(void);
 bool a2dp_source_is_connected(void);
 
 // True as soon as a connection attempt starts, i.e. not DISCONNECTED. The
-// config portal must be gone by then: the Bluetooth stack needs the heap it
-// holds before it allocates the streaming buffers.
+// config portal is never started while this is true: the Bluetooth stack needs
+// the radio and the heap before it allocates the streaming buffers.
 bool a2dp_source_is_active(void);
 
 // True while device discovery is running.
 bool a2dp_source_is_scanning(void);
+
+// Shuts Bluetooth down completely and releases the Classic BT memory, so the
+// Wi-Fi stack can take the radio and the heap. There is no way back in this
+// boot: Bluetooth cannot be initialised again, a restart is required (which is
+// what saving the config page does). Safe to call when not started.
+void a2dp_source_stop(void);
+
+// True once a2dp_source_stop() released the Bluetooth stack.
+bool a2dp_source_is_shut_down(void);
 
 // Human readable connection state for the periodic status log.
 const char *a2dp_source_state(void);

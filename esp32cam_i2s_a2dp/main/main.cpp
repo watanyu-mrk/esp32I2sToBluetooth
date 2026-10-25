@@ -40,81 +40,71 @@
 
 static const char *TAG = "app";
 
-// The config portal (Wi-Fi AP + web page) only runs while no speaker is
-// connected: Wi-Fi and Bluetooth Classic share the radio and the heap, and the
-// A2DP stream needs both. A short delay after boot leaves the reconnect path
-// a chance to win before the portal costs anything.
-#define PORTAL_FIRST_DELAY_MS 3000
-#define PORTAL_REOPEN_DELAY_MS 30000
+// The config portal (Wi-Fi AP + web page) is the fallback, never the default
+// path: Wi-Fi and Bluetooth Classic share the radio and the heap, so raising
+// the AP while the A2DP source is still hunting for its speaker costs the
+// stream both. The board boots straight into Bluetooth and only after
+// APP_CONFIG_PORTAL_DELAY_MS without a connected speaker does it shut the
+// Bluetooth stack down - releasing its memory to the Wi-Fi stack - and raise
+// the portal. There is no way back from that without a restart, which is
+// exactly what saving the page does.
 #define PORTAL_RETRY_MS 10000
-// The Wi-Fi AP plus the HTTP server need roughly 30 KB; below this the
-// Bluetooth stack would start failing its own allocations.
+// The Wi-Fi AP plus the HTTP server need roughly 30 KB.
 #define PORTAL_MIN_HEAP_BYTES (32 * 1024)
 
 static int64_t s_disconnected_since_us;
-static size_t s_buffer_bytes;
+static bool s_bt_released;
 
-// Nothing is streaming while the portal is up (the audio gate is closed), so
-// the ring buffer is dead weight. Its ~64 KB is exactly what the Wi-Fi stack
-// and the HTTP server need: handing it over is what makes the portal fit.
+// Nothing is streaming once Bluetooth is gone (the audio gate is closed), so
+// the ring buffer is dead weight. Its ~64 KB go back to the system and stay
+// there: the Bluetooth stack that would fill it cannot be restarted.
 static void release_audio_buffer(void) {
   audio_buffer_deinit();
   ESP_LOGI(TAG, "audio buffer released for the config portal (%u bytes free)",
            (unsigned)esp_get_free_heap_size());
 }
 
-static void restore_audio_buffer(void) {
-  if (!audio_buffer_init(s_buffer_bytes)) {
-    ESP_LOGE(TAG, "cannot reallocate the audio buffer after the config portal");
-  }
-}
+static void service_config_portal(void) {
+  if (config_portal_is_running()) return;
 
-static void service_config_portal(bool *opened_once) {
-  // Close as soon as a connection starts, not when it completes: the stack
-  // allocates its streaming buffers (several 4 KB packets) right after that,
-  // and the Wi-Fi stack is still holding ~30 KB at this point.
   if (a2dp_source_is_active()) {
     s_disconnected_since_us = 0;
-    if (config_portal_is_running()) {
-      ESP_LOGI(TAG, "speaker link starting: closing the config portal");
-      config_portal_stop();
-      restore_audio_buffer();
-    }
     return;
   }
 
-  if (config_portal_is_running()) return;
-
   int64_t now = esp_timer_get_time();
   if (s_disconnected_since_us == 0) s_disconnected_since_us = now;
+  if (now - s_disconnected_since_us <
+      (int64_t)APP_CONFIG_PORTAL_DELAY_MS * 1000) {
+    return;
+  }
 
-  int64_t delay_ms = *opened_once ? PORTAL_REOPEN_DELAY_MS : PORTAL_FIRST_DELAY_MS;
-  if (now - s_disconnected_since_us < delay_ms * 1000) return;
-
-  // Retry slowly: the portal costs a lot of heap and the Bluetooth stack is
-  // still allocating its buffers, so a failing attempt should not be repeated
-  // every tick.
+  // Retry slowly: a failing attempt should not be repeated every tick.
   static int64_t last_attempt_us;
   if (last_attempt_us != 0 && now - last_attempt_us < PORTAL_RETRY_MS * 1000) {
     return;
   }
   last_attempt_us = now;
 
-  release_audio_buffer();
+  // Bluetooth first, Wi-Fi second: the Wi-Fi stack needs the memory the
+  // Bluetooth controller is holding, and it needs the radio without a coex
+  // partner still trying to discover a speaker.
+  if (!s_bt_released) {
+    ESP_LOGW(TAG, "no speaker after %d s: switching to the config portal",
+             CONFIG_APP_PORTAL_DELAY_S);
+    a2dp_source_stop();
+    s_bt_released = true;
+    release_audio_buffer();
+  }
 
-  // Still leave headroom for the Bluetooth stack: it has to survive the portal
-  // and allocate its streaming buffers as soon as a speaker answers.
   if (esp_get_free_heap_size() < PORTAL_MIN_HEAP_BYTES) {
     ESP_LOGW(TAG, "not enough free heap for the config portal (%u bytes)",
              (unsigned)esp_get_free_heap_size());
-    restore_audio_buffer();
     return;
   }
 
-  if (config_portal_start()) {
-    *opened_once = true;
-  } else {
-    restore_audio_buffer();
+  if (!config_portal_start()) {
+    ESP_LOGE(TAG, "config portal start failed, retrying");
   }
 }
 
@@ -239,9 +229,9 @@ extern "C" void app_main(void) {
   log_environment();
 
   const app_settings_t *settings = app_settings_get();
-  s_buffer_bytes = (size_t)settings->output_rate * APP_BYTES_PER_FRAME *
-                   settings->buffer_ms / 1000;
-  if (!audio_buffer_init(s_buffer_bytes)) {
+  size_t buffer_bytes = (size_t)settings->output_rate * APP_BYTES_PER_FRAME *
+                        settings->buffer_ms / 1000;
+  if (!audio_buffer_init(buffer_bytes)) {
     ESP_LOGE(TAG, "audio buffer init failed - stopping");
     return;
   }
@@ -295,13 +285,14 @@ extern "C" void app_main(void) {
   }
 #endif
 
-  bool portal_opened = false;
+  ESP_LOGI(TAG, "waiting for a speaker (config portal opens after %d s)",
+           CONFIG_APP_PORTAL_DELAY_S);
   int64_t next_stats_us =
       esp_timer_get_time() + (int64_t)CONFIG_APP_STATS_INTERVAL_MS * 1000;
 
   while (true) {
     vTaskDelay(pdMS_TO_TICKS(250));
-    service_config_portal(&portal_opened);
+    service_config_portal();
 
     if (esp_timer_get_time() >= next_stats_us) {
       log_status();

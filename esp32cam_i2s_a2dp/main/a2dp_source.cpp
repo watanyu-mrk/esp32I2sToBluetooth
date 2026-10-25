@@ -4,6 +4,7 @@
 
 #include "BluetoothA2DPSource.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -16,6 +17,7 @@ static const char *TAG = "a2dp_src";
 
 static BluetoothA2DPSource s_source;
 static bool s_started = false;
+static bool s_shut_down = false;
 static volatile bool s_scanning = false;
 
 // The library only refreshes the cached audio state that get_audio_state()
@@ -132,6 +134,25 @@ void a2dp_source_start(void) {
   }
 }
 
+void a2dp_source_stop(void) {
+  if (!s_started) return;
+
+  ESP_LOGW(TAG, "shutting Bluetooth down to free the radio and the heap");
+  // end(true) disables and deinitialises Bluedroid and the controller and
+  // releases the Classic BT memory - that is the memory the Wi-Fi stack needs
+  // for the config portal. It also makes Bluetooth unusable until the next
+  // boot, which is fine: the portal only comes up when the bridge has given up
+  // on finding a speaker.
+  s_source.end(true);
+  s_started = false;
+  s_shut_down = true;
+  s_scanning = false;
+  ESP_LOGI(TAG, "Bluetooth released (%u bytes free)",
+           (unsigned)esp_get_free_heap_size());
+}
+
+bool a2dp_source_is_shut_down(void) { return s_shut_down; }
+
 bool a2dp_source_is_connected(void) {
   if (!s_started) return false;
   return s_source.is_connected();
@@ -155,6 +176,7 @@ bool a2dp_source_is_streaming(void) {
 }
 
 const char *a2dp_source_state(void) {
+  if (s_shut_down) return "Off (config mode)";
   if (!s_started) return "Idle";
 
   switch (s_source.get_connection_state()) {

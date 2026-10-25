@@ -20,20 +20,34 @@
   - รายชื่อลำโพงมาจาก discovery ของ A2DP เอง (`bt_scan.c` เก็บชื่อ/addr/RSSI 8 ตัว)
   - หน้าตั้งค่า: เลือกลำโพง, ชื่อน้องบอร์ด, SSP, input rate, buffer ms
     (A2DP output ตรึง 44100 — SBC ของ Bluedroid ฮาร์ดโค้ด `btc_a2dp_source.c:446`)
-- ลำดับการทำงาน: portal เปิด 3 s หลังบูตถ้ายังต่อลำโพงไม่ได้ → ปิด Wi-Fi ทั้งก้อน
-  (`esp_wifi_deinit`) ทันทีที่ **เริ่ม**เชื่อมต่อ (`a2dp_source_is_active()`), เปิดใหม่
-  เมื่อหลุดต่อเนื่อง 30 s; ระหว่าง portal เปิดจะคืน ring buffer 64 KB ให้ระบบ
+- ลำดับการทำงาน (แก้รอบล่าสุด): **บูตเข้า Bluetooth อย่างเดียว ไม่เปิด Wi-Fi ตั้งแต่แรก**
+  → ถ้าไม่ต่อลำโพงได้ภายใน `CONFIG_APP_PORTAL_DELAY_S` (ค่าเริ่มต้น **180 s**)
+  → `a2dp_source_stop()` = `end(true)` ปิด Bluedroid/controller + คืนหน่วยความจำ
+  Classic BT → คืน ring buffer 64 KB → เปิด AP + HTTP server (**ไม่มีวันกลับไป BT
+  ในรอบบูตนั้น**, reboot เท่านั้น — ซึ่งคือสิ่งที่ POST /api/settings ทำ)
+  (บิลด์ก่อนหน้าเปิด AP 3 s หลังบูตทับ Bluetooth แล้วปิดเมื่อเริ่มเชื่อมต่อ — เอาออกแล้ว)
 - boot-time pin check (`pin_activity.c`): sample BCLK/WS/DATA 60 ms แล้วบอกว่า
   toggling / static HIGH / static LOW
 
-**ยืนยันบนบอร์ดจริงแล้ว**
+**ยืนยันบนบอร์ดจริงแล้ว (รอบล่าสุด — Bluetooth ก่อน, portal หลัง 3 นาที)**
+
+| สิ่งที่ทดสอบ | ผล |
+|---|---|
+| บูตแล้วไม่เปิด Wi-Fi | ✅ `app: waiting for a speaker (config portal opens after 180 s)`, ไม่มี `access point ... up` |
+| ครบ 180 s แล้วสลับโหมด | ✅ `no speaker after 180 s: switching to the config portal` |
+| ปล่อย Bluetooth คืน heap | ✅ `a2dp_src: Bluetooth released (126584 bytes free)` → `audio buffer released (192124 bytes free)` |
+| AP ขึ้นหลัง BT ดับ | ✅ `access point 'ESP32-A2DP-Setup' up` / `config portal ready (146824 bytes free)` |
+| ต่อ AP จาก Windows + GET/POST จริง | ✅ ต่อ `ESP32-A2DP-Setup` ได้ และใช้งานหน้าเว็บ/API ได้ (รอบก่อนก็ผ่าน) |
+| buffer ใหญ่เกินจะจอง contiguous | ✅ เจอบั๊ก: `buffer_ms 400` → ขอ 131072 B แล้ว `app: audio buffer init failed - stopping` ⇒ แก้เป็นลดขนาดลงครึ่งหนึ่งจนจองได้ (`only ... reduced to 371 ms`) |
+
+**ยืนยันในรอบก่อน (ตอนที่ portal เปิดทับ Bluetooth)**
 
 | สิ่งที่ทดสอบ | ผล |
 |---|---|
 | settings เขียน/อ่าน NVS ข้ามบูต | ✅ `settings: loaded: sink 'BT Speaker', ... buffer 300 ms` |
 | AP + HTTP server ขึ้น | ✅ `access point 'ESP32-A2DP-Setup' up` / `config portal ready (75780 bytes free)` |
 | คืน ring buffer ตอนเข้าโหมดตั้งค่า | ✅ `audio buffer released for the config portal (122036 bytes free)` |
-| ปิด portal เมื่อเริ่มต่อลำโพง | ✅ `speaker link starting: closing the config portal` → `wi-fi stopped (106004 bytes free)` |
+| ~~ปิด portal เมื่อเริ่มต่อลำโพง~~ | ❌ ไม่มีแล้ว (path นี้ถูกแทนที่ด้วย "ปิด Bluetooth ก่อนเปิด portal") |
 | discovery → รายชื่อลำโพง | ✅ `bt_scan: sink BT Speaker (00:58:56:74:31:f3, -35 dBm)` |
 | pin check ตอนบูต | ✅ `BCLK: toggling, 44456 edges` / `WS: toggling, 5297` |
 | หน้าเว็บ (Chrome headless + mock API) | ✅ เรนเดอร์สถานะ/รายชื่อ/RSSI ถูก, escape ชื่อที่มีอัญประกาศได้ |

@@ -33,16 +33,35 @@ bool audio_buffer_init(size_t capacity_bytes) {
 
   size_t frames = capacity_bytes / APP_BYTES_PER_FRAME;
   if (frames < 256) frames = 256;
-  frames = next_power_of_two(frames);
+  size_t requested_frames = next_power_of_two(frames);
+  frames = requested_frames;
 
   // Internal RAM: the buffer is written by an ISR-fed DMA task and read from
   // the Bluetooth task, so it must not live in (slower) PSRAM.
-  s_samples = heap_caps_malloc(frames * APP_BYTES_PER_FRAME,
-                               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  if (s_samples == NULL) {
-    ESP_LOGE(TAG, "cannot allocate %u bytes for the audio buffer",
-             (unsigned)(frames * APP_BYTES_PER_FRAME));
-    return false;
+  //
+  // It has to be one contiguous block, and internal RAM is split into regions
+  // of ~110 KB, so a large buffer_ms setting can ask for more than any single
+  // region holds. Halving the size until the allocation succeeds degrades the
+  // jitter buffer instead of stopping the bridge from booting at all - the
+  // config page is not reachable otherwise.
+  while (true) {
+    s_samples = heap_caps_malloc(frames * APP_BYTES_PER_FRAME,
+                                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (s_samples != NULL) break;
+    if (frames <= 256) {
+      ESP_LOGE(TAG, "cannot allocate %u bytes for the audio buffer",
+               (unsigned)(frames * APP_BYTES_PER_FRAME));
+      return false;
+    }
+    frames >>= 1;
+  }
+  if (frames != requested_frames) {
+    ESP_LOGW(TAG,
+             "only %u bytes could be allocated contiguously: buffer reduced "
+             "to %u ms (asked for %u ms)",
+             (unsigned)(frames * APP_BYTES_PER_FRAME),
+             (unsigned)(frames * 1000 / APP_OUTPUT_SAMPLE_RATE),
+             (unsigned)(requested_frames * 1000 / APP_OUTPUT_SAMPLE_RATE));
   }
 
   s_capacity_frames = frames;
