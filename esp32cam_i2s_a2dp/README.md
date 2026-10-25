@@ -169,13 +169,16 @@ esptool.py --chip esp32 -p COM6 -b 460800 write_flash 0x0 firmware.bin
 แฟลชทับแล้ว **NVS (ค่าตั้งค่าและคู่ Bluetooth) จะว่างทั้งหมด** บอร์ดจะกลับไปใช้ค่า
 จาก Kconfig แล้วต้องจับคู่ลำโพงใหม่ (หรือตั้งผ่านหน้าเว็บ)
 
-ผลการ build จริง (รอบล่าสุด รวม Wi-Fi config portal):
+ผลการ build จริง (รอบล่าสุด รวม Wi-Fi config portal + portal หลัง 3 นาที):
 
 ```
-esp32cam_i2s_a2dp.bin binary size 0x15e640 bytes (1.4 MB)
-Smallest app partition is 0x300000 bytes. 0x1a19c0 bytes (54%) free.
-firmware.bin           1500736 bytes, flash at 0x0
+esp32cam_i2s_a2dp.bin binary size 0x15eb20 bytes (1.4 MB)
+Smallest app partition is 0x300000 bytes. 0x1a14e0 bytes (54%) free.
+firmware.bin           1501984 bytes (0x16eb20), flash at 0x0
 ```
+
+`firmware.bin` เป็นไฟล์ที่สร้างใหม่ทุกครั้งที่ build (อยู่ใน `.gitignore`) — ถ้าตัวเลข
+ข้างบนไม่ตรงกับ build ล่าสุดให้รันคำสั่ง `merge_bin` ด้านบนใหม่ อย่าใช้ไฟล์เก่า
 
 ## ตัวเลือกใน menuconfig
 
