@@ -17,9 +17,15 @@ extern "C" {
 // page and the discovery matching simple.
 #define APP_SETTINGS_NAME_LEN 33
 
+// esp_bt_pin_code_t holds at most 16 digits, plus the terminator.
+#define APP_SETTINGS_PIN_LEN 17
+
 typedef struct {
   char target_name[APP_SETTINGS_NAME_LEN];  // empty: connect to the first sink
   char local_name[APP_SETTINGS_NAME_LEN];
+  // Legacy pairing PIN (1-16 digits), e.g. "0000" for many car head units.
+  // Empty: leave the library default ("1234") in place.
+  char pin_code[APP_SETTINGS_PIN_LEN];
   bool ssp_enabled;
   uint32_t input_rate;   // I2S rate of the ESP32-S3 (descriptive: slave)
   uint32_t output_rate;  // PCM rate fed to A2DP

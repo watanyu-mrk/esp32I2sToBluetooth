@@ -62,8 +62,11 @@
   <h2>บอร์ดนี้</h2>
   <label for="local">ชื่อที่ประกาศผ่าน Bluetooth</label>
   <input id="local" type="text" maxlength="32" autocomplete="off">
+  <label for="pin">รหัส PIN สำหรับจับคู่แบบ Legacy (1–16 หลัก)</label>
+  <input id="pin" type="text" inputmode="numeric" maxlength="16" pattern="[0-9]*" autocomplete="off" placeholder="เช่น 0000">
+  <p class="hint">ใช้ตอบเมื่ออุปกรณ์ปลายทางขอรหัส เช่น เครื่องเล่นในรถที่ต้องใส่ 0000 — เว้นว่าง = ใช้ค่าเริ่มต้นของไลบรารี (1234)</p>
   <label class="inline"><input type="checkbox" id="ssp"> ใช้ Secure Simple Pairing (SSP)</label>
-  <p class="hint">ปิดไว้สำหรับลำโพงรุ่นเก่าที่ใช้ PIN แบบเดิม</p>
+  <p class="hint">ปิดไว้สำหรับเครื่องเล่น/ลำโพงรุ่นเก่าที่ขอรหัส PIN แบบเดิม</p>
 </section>
 
 <section>
@@ -94,7 +97,7 @@
 (function () {
   "use strict";
 
-  var fields = ["target", "local", "ssp", "input_rate", "buffer_ms"];
+  var fields = ["target", "local", "pin", "ssp", "input_rate", "buffer_ms"];
   var loaded = false;
 
   function $(id) { return document.getElementById(id); }
@@ -165,6 +168,7 @@
     if (!loaded) {
       $("target").value = state.settings.target;
       $("local").value = state.settings.local;
+      $("pin").value = state.settings.pin;
       $("ssp").checked = state.settings.ssp;
       $("input_rate").value = String(state.settings.input_rate);
       $("buffer_ms").value = state.settings.buffer_ms;
@@ -199,10 +203,17 @@
       return;
     }
 
+    var pin = $("pin").value.trim();
+    if (pin !== "" && !/^[0-9]{1,16}$/.test(pin)) {
+      setStatus("รหัส PIN ต้องเป็นตัวเลข 1–16 หลัก (หรือเว้นว่าง)", "warn");
+      return;
+    }
+
     $("save").disabled = true;
     post("/api/settings", {
       target: $("target").value.trim(),
       local: $("local").value.trim(),
+      pin: pin,
       ssp: $("ssp").checked,
       input_rate: Number($("input_rate").value),
       buffer_ms: buffer

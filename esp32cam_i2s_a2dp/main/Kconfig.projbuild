@@ -14,6 +14,18 @@ config APP_BT_TARGET_NAME
         starts with this string. Leave empty to connect to the first
         discoverable A2DP sink.
 
+config APP_BT_PIN_CODE
+    string "Legacy pairing PIN code (1-16 digits)"
+    default "1234"
+    help
+        PIN code that this board answers with when the sink asks for a
+        legacy pairing code. Many car head units expect "0000"; older
+        speakers usually use "1234".
+
+        Only digits are accepted (1-16 of them). Leave empty to leave the
+        A2DP library default in place. This is a factory default only: the
+        value can be changed at runtime from the Wi-Fi config page.
+
 config APP_BT_SSP
     bool "Use Secure Simple Pairing (SSP)"
     default n
@@ -129,7 +141,7 @@ config APP_TEST_TONE
 
 config APP_PORTAL_DELAY_S
     int "Start the Wi-Fi config portal after this many seconds without a speaker"
-    default 180
+    default 60
     range 10 3600
     help
         The board boots straight into Bluetooth and never raises the Wi-Fi

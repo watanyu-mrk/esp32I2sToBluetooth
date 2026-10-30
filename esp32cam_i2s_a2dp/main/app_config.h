@@ -15,6 +15,7 @@
 // ---------------------------------------------------------------------------
 #define APP_BT_DEVICE_NAME CONFIG_APP_BT_DEVICE_NAME
 #define APP_BT_TARGET_NAME CONFIG_APP_BT_TARGET_NAME
+#define APP_BT_PIN_CODE CONFIG_APP_BT_PIN_CODE
 #define APP_BT_RECONNECT_TRIES 1000
 
 // How long the bridge keeps trying to reach a speaker before it gives up on

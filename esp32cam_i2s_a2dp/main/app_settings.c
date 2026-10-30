@@ -13,7 +13,7 @@ static const char *TAG = "settings";
 
 #define NVS_NAMESPACE "appcfg"
 #define NVS_KEY "cfg"
-#define SETTINGS_VERSION 1
+#define SETTINGS_VERSION 2
 
 // The legacy SBC path in Bluedroid feeds its encoder with a fixed 44100 Hz PCM
 // stream (btc_a2dp_source.c: media_feeding.cfg.pcm.sampling_freq = 44100), so
@@ -43,10 +43,26 @@ static void force_terminator(char *text, size_t size) {
   text[size - 1] = '\0';
 }
 
+// Empty means "not configured" (the A2DP library keeps its own default);
+// anything else must be 1-16 digits, because that is what the Bluetooth
+// stack's esp_bt_pin_code_t and the remote's keypad can handle.
+static bool is_valid_pin(const char *pin) {
+  if (pin[0] == '\0') return true;
+
+  size_t len = strlen(pin);
+  if (len > APP_SETTINGS_PIN_LEN - 1) return false;
+
+  for (size_t i = 0; i < len; i++) {
+    if (pin[i] < '0' || pin[i] > '9') return false;
+  }
+  return true;
+}
+
 void app_settings_defaults(app_settings_t *out) {
   memset(out, 0, sizeof(*out));
   strncpy(out->target_name, APP_BT_TARGET_NAME, APP_SETTINGS_NAME_LEN - 1);
   strncpy(out->local_name, APP_BT_DEVICE_NAME, APP_SETTINGS_NAME_LEN - 1);
+  strncpy(out->pin_code, APP_BT_PIN_CODE, APP_SETTINGS_PIN_LEN - 1);
   out->ssp_enabled = APP_BT_SSP_ENABLED != 0;
   out->input_rate = APP_INPUT_SAMPLE_RATE;
   out->output_rate = A2DP_PCM_RATE;
@@ -58,10 +74,20 @@ void app_settings_defaults(app_settings_t *out) {
 static bool validate(app_settings_t *candidate, bool log_problems) {
   force_terminator(candidate->target_name, APP_SETTINGS_NAME_LEN);
   force_terminator(candidate->local_name, APP_SETTINGS_NAME_LEN);
+  force_terminator(candidate->pin_code, APP_SETTINGS_PIN_LEN);
 
   if (candidate->local_name[0] == '\0') {
     strncpy(candidate->local_name, APP_BT_DEVICE_NAME, APP_SETTINGS_NAME_LEN - 1);
     force_terminator(candidate->local_name, APP_SETTINGS_NAME_LEN);
+  }
+
+  if (!is_valid_pin(candidate->pin_code)) {
+    if (log_problems) {
+      ESP_LOGW(TAG, "PIN '%s' is not 1-16 digits, using the default",
+               candidate->pin_code);
+    }
+    strncpy(candidate->pin_code, APP_BT_PIN_CODE, APP_SETTINGS_PIN_LEN - 1);
+    force_terminator(candidate->pin_code, APP_SETTINGS_PIN_LEN);
   }
 
   if (!is_valid_input_rate(candidate->input_rate)) {
@@ -131,10 +157,12 @@ void app_settings_load(void) {
   s_loaded = true;
 
   ESP_LOGI(TAG,
-           "loaded: sink '%s', local '%s', SSP %s, I2S %" PRIu32
+           "loaded: sink '%s', local '%s', PIN '%s', SSP %s, I2S %" PRIu32
            " Hz, A2DP %" PRIu32 " Hz, buffer %" PRIu32 " ms",
            s_settings.target_name[0] ? s_settings.target_name : "(any)",
-           s_settings.local_name, s_settings.ssp_enabled ? "on" : "off",
+           s_settings.local_name,
+           s_settings.pin_code[0] ? s_settings.pin_code : "(library default)",
+           s_settings.ssp_enabled ? "on" : "off",
            s_settings.input_rate, s_settings.output_rate, s_settings.buffer_ms);
 }
 
@@ -179,10 +207,12 @@ bool app_settings_save(const app_settings_t *candidate) {
   s_settings = copy;
   s_loaded = true;
   ESP_LOGI(TAG,
-           "saved: sink '%s', local '%s', SSP %s, I2S %" PRIu32
+           "saved: sink '%s', local '%s', PIN '%s', SSP %s, I2S %" PRIu32
            " Hz, buffer %" PRIu32 " ms",
            s_settings.target_name[0] ? s_settings.target_name : "(any)",
-           s_settings.local_name, s_settings.ssp_enabled ? "on" : "off",
+           s_settings.local_name,
+           s_settings.pin_code[0] ? s_settings.pin_code : "(library default)",
+           s_settings.ssp_enabled ? "on" : "off",
            s_settings.input_rate, s_settings.buffer_ms);
   return true;
 }

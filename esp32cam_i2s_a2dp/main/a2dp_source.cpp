@@ -122,6 +122,18 @@ void a2dp_source_start(void) {
            settings->ssp_enabled ? "enabled (numeric value auto-confirmed)"
                                  : "disabled (legacy PIN only)");
 
+  // Legacy pairing: the sink (speaker, car head unit) asks for a PIN and this
+  // is the code the board answers with. A fixed PIN lets the controller answer
+  // on its own instead of waiting for the application event, which is what car
+  // kits expect when their screen says "enter 0000". It has to be set before
+  // start(), because start() hands it to esp_bt_gap_set_pin().
+  if (settings->pin_code[0] != '\0') {
+    s_source.set_pin_code(settings->pin_code, ESP_BT_PIN_TYPE_FIXED);
+    ESP_LOGI(TAG, "pairing: legacy PIN '%s'", settings->pin_code);
+  } else {
+    ESP_LOGI(TAG, "pairing: no PIN configured, using the library default");
+  }
+
   if (settings->target_name[0] != '\0') {
     clear_stored_peer();
     ESP_LOGI(TAG, "local name '%s', looking for sink '%s'",

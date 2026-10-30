@@ -1,27 +1,58 @@
 # สถานะงาน (handoff) — กลับมาทำต่อจากไฟล์นี้
 
-อัปเดตล่าสุด: 25 ต.ค. 2026 · บอร์ดทดสอบ: ESP32-CAM (ESP32-D0WD) ที่ **COM6**
-(รอบล่าสุด: เพิ่ม **Wi-Fi config portal (AP mode)** + boot-time pin check — build ผ่าน
-แต่ **ยังแฟลชบิลด์สุดท้ายไม่ลง** เพราะเข้า download mode ไม่ได้ ดูหัวข้อถัดไป)
+อัปเดตล่าสุด: 30 ต.ค. 2026 · บอร์ดทดสอบ: ESP32-CAM (ESP32-D0WD) ที่ **COM6**
+(รอบล่าสุด: เพิ่ม **รหัส PIN สำหรับจับคู่แบบ Legacy** ไว้ตั้งได้จากหน้าเว็บ — สำหรับ
+เครื่องเล่นในรถที่บังคับใส่ `0000` + ลดเวลาเข้าโหมดตั้งค่าจาก 180 s เหลือ **60 s** —
+flash ผ่านด้วย `--before default_reset` แล้ว และตรวจ boot log บนบอร์ดจริงเรียบร้อย
+เหลือทดสอบจับคู่กับเครื่องเล่นในรถจริง)
 
 อ่าน `README.md` สำหรับผังสาย/ตัวเลือก/menuconfig ทั้งหมด — ไฟล์นี้สรุปแค่ว่า
 **ทำอะไรเสร็จแล้ว, อะไรยังไม่ได้ทำ, และเริ่มต่อยังไง**
 
-## รอบล่าสุด — Wi-Fi config portal (AP mode)
+## รอบล่าสุด (30 ต.ค. 2026) — รหัส PIN จับคู่ + portal 60 s
+
+**ทำเสร็จ (build ผ่าน, flash ลงบอร์ดแล้ว, ยืนยันจาก boot log)**
+
+- **รหัส PIN จับคู่แบบ Legacy** เป็นค่าตั้งค่าแล้ว (`app_settings.h`: `char pin_code[17]`
+  = 1–16 หลัก): `validate()` เปลี่ยนค่าที่ไม่ใช่ตัวเลขหรือยาวเกินเป็นค่า Kconfig
+  (`CONFIG_APP_BT_PIN_CODE`, ค่าเริ่มต้น `1234`) ⇒ ตั้ง `0000` สำหรับเครื่องเล่นในรถ
+  ได้จากหน้าเว็บ ไม่ต้อง build ใหม่
+- ส่งให้ Bluetooth stack ก่อน `start()` ด้วย `set_pin_code(pin, ESP_BT_PIN_TYPE_FIXED)`
+  (`main/a2dp_source.cpp`) ⇒ controller ตอบรหัสเองทันทีเมื่อ sink ขอ PIN แบบ legacy
+  (ไม่ต้องรอ event ของ app) — log: `a2dp_src: pairing: legacy PIN '1234'`
+- หน้าเว็บมีช่อง “รหัส PIN สำหรับจับคู่แบบ Legacy (1–16 หลัก)” (ตรวจรูปแบบก่อน POST),
+  `/api/state` ส่ง `settings.pin`, `POST /api/settings` รับ `pin`
+- **portal เร็วขึ้น**: `CONFIG_APP_PORTAL_DELAY_S` 180 → **60** — ต้องแก้ทั้ง default ใน
+  `Kconfig.projbuild` และค่าใน `sdkconfig` ไม่งั้น build ยังใช้ 180
+- `SETTINGS_VERSION` 1 → 2 ⇒ ค่าที่เคยเก็บใน NVS (ชื่อลำโพง ฯลฯ) รีเซ็ตเป็น Kconfig
+  หนึ่งครั้งหลังแฟลช
+
+**ยืนยันบนบอร์ดจริง (boot log จาก `monitor2.log`)**
+
+| สิ่งที่ทดสอบ | ผล |
+|---|---|
+| โหลด PIN จาก NVS | ✅ `settings: loaded: ..., PIN '1234', SSP off, ...` |
+| ส่ง PIN เข้า stack ก่อน start | ✅ `a2dp_src: pairing: SSP disabled (legacy PIN only)` + `pairing: legacy PIN '1234'` |
+| portal หลัง 60 s | ✅ `waiting for a speaker (config portal opens after 60 s)` → `no speaker after 60 s: switching to the config portal` (~61.8 s) |
+| ปลด BT แล้ว AP ขึ้น | ✅ `Bluetooth released (126580 bytes free)` → `access point 'ESP32-A2DP-Setup' up` / `config portal ready (146844 bytes free)` |
+| จับคู่กับเครื่องเล่นในรถจริง | ❌ ยังไม่ได้ (ยังไม่มีรถ/ฮาร์ดแวร์ในรอบนี้) |
+
+## รอบก่อน — Wi-Fi config portal (AP mode)
 
 **ทำเสร็จ (build ผ่าน, image 1.4 MB, `firmware.bin` รวมทุกอย่างแล้ว)**
 
 - ค่าตั้งค่าย้ายจาก compile-time → NVS (`app_settings.c`, namespace `appcfg`):
-  target name / local name / SSP / I2S input rate / buffer ms — Kconfig เป็นแค่ค่าโรงงาน
+  target name / local name / **pairing PIN** / SSP / I2S input rate / buffer ms —
+  Kconfig เป็นแค่ค่าโรงงาน (NVS version 2)
 - AP `ESP32-A2DP-Setup` (`esp32cam`) + HTTP server (`config_portal.c`) + หน้าเว็บ
   ฝังในเฟิร์มแวร์ (`main/web/index.html`, `EMBED_FILES`)
   - `GET /` หน้าเว็บ, `GET /api/state`, `POST /api/settings`, `POST /api/rescan`,
     `POST /api/reboot`
   - รายชื่อลำโพงมาจาก discovery ของ A2DP เอง (`bt_scan.c` เก็บชื่อ/addr/RSSI 8 ตัว)
-  - หน้าตั้งค่า: เลือกลำโพง, ชื่อน้องบอร์ด, SSP, input rate, buffer ms
+  - หน้าตั้งค่า: เลือกลำโพง, ชื่อบอร์ด, รหัส PIN จับคู่, SSP, input rate, buffer ms
     (A2DP output ตรึง 44100 — SBC ของ Bluedroid ฮาร์ดโค้ด `btc_a2dp_source.c:446`)
 - ลำดับการทำงาน (แก้รอบล่าสุด): **บูตเข้า Bluetooth อย่างเดียว ไม่เปิด Wi-Fi ตั้งแต่แรก**
-  → ถ้าไม่ต่อลำโพงได้ภายใน `CONFIG_APP_PORTAL_DELAY_S` (ค่าเริ่มต้น **180 s**)
+  → ถ้าไม่ต่อลำโพงได้ภายใน `CONFIG_APP_PORTAL_DELAY_S` (ค่าเริ่มต้น **60 s**) 
   → `a2dp_source_stop()` = `end(true)` ปิด Bluedroid/controller + คืนหน่วยความจำ
   Classic BT → คืน ring buffer 64 KB → เปิด AP + HTTP server (**ไม่มีวันกลับไป BT
   ในรอบบูตนั้น**, reboot เท่านั้น — ซึ่งคือสิ่งที่ POST /api/settings ทำ)
@@ -29,12 +60,12 @@
 - boot-time pin check (`pin_activity.c`): sample BCLK/WS/DATA 60 ms แล้วบอกว่า
   toggling / static HIGH / static LOW
 
-**ยืนยันบนบอร์ดจริงแล้ว (รอบล่าสุด — Bluetooth ก่อน, portal หลัง 3 นาที)**
+**ยืนยันบนบอร์ดจริงแล้ว (ตอนนั้น portal ยังตั้งไว้ 180 s)**
 
 | สิ่งที่ทดสอบ | ผล |
 |---|---|
 | บูตแล้วไม่เปิด Wi-Fi | ✅ `app: waiting for a speaker (config portal opens after 180 s)`, ไม่มี `access point ... up` |
-| ครบ 180 s แล้วสลับโหมด | ✅ `no speaker after 180 s: switching to the config portal` |
+| ครบ 180 s แล้วสลับโหมด | ✅ `no speaker after 180 s: switching to the config portal` (ต่อมาลดเหลือ 60 s แล้ว) |
 | ปล่อย Bluetooth คืน heap | ✅ `a2dp_src: Bluetooth released (126584 bytes free)` → `audio buffer released (192124 bytes free)` |
 | AP ขึ้นหลัง BT ดับ | ✅ `access point 'ESP32-A2DP-Setup' up` / `config portal ready (146824 bytes free)` |
 | ต่อ AP จาก Windows + GET/POST จริง | ✅ ต่อ `ESP32-A2DP-Setup` ได้ และใช้งานหน้าเว็บ/API ได้ (รอบก่อนก็ผ่าน) |
@@ -66,36 +97,37 @@
 5. Wi-Fi IRAM opt เปิดอยู่ทำให้ลิงก์ไม่ผ่าน (`iram0_0_seg overflowed by 720 bytes`)
    ⇒ ปิด `ESP_WIFI_IRAM_OPT` / `ESP_WIFI_RX_IRAM_OPT`
 
-**ค้างอยู่ — ต้องแฟลชบิลด์สุดท้าย**
+**แฟลชแล้ว — ไม่มีอะไรค้าง (30 ต.ค. 2026)**
 
-- บอร์ดยังรันบิลด์ที่มี `MGMT_SBUF_NUM=8` (AP ไม่ส่ง beacon) เพราะแฟลชรอบหลัง ๆ ล้ม
-- **เข้า download mode จาก software ไม่ได้**: ทดสอบแล้ว DTR/IO0 ของ adapter บนบอร์ดนี้
-  ไม่ได้ต่อกัน — สั่ง DTR=True/False + reset แล้วชิปยังขึ้น `boot:0x13
-  (SPI_FAST_FLASH_BOOT)` ทั้งคู่ ⇒ ต้อง **จั๊ม IO0→GND แล้วตัด/ต่อ USB ใหม่**
-- ขั้นตอนที่เหลือ (ทำทันทีที่เข้า download mode ได้):
-  ```bash
-  cd esp32cam_i2s_a2dp
-  esptool --chip esp32 -p COM6 -b 460800 --before no_reset write_flash 0x0 firmware.bin
-  # log ที่ต้องเห็น: settings: loaded / config portal ready (~75 KB free) /
-  # buffer released / access point 'ESP32-A2DP-Setup' up
-  # แล้วต่อ Wi-Fi เข้า AP: curl http://192.168.4.1/api/state , GET / , POST /api/settings
-  ```
-- หมายเหตุ: `firmware.bin` เติมช่วง NVS ด้วย 0xFF ⇒ แฟลชแล้วค่าตั้งค่า/คู่ BT หาย
-  บอร์ดจะกลับไปใช้ target จาก Kconfig (`BT Speaker`) แล้วจับคู่ใหม่เอง
+- `firmware.bin` ใหม่: **1,503,616 bytes (0x16f180)**, MD5 `f6eec369aaaa6ed1a48d8031c34b2412`
+  (ตรวจแล้วว่า bootloader `0x1000` / partition table `0x8000` / app `0x10000`
+  ตรงกับไฟล์ใน `build/` ทุกช่วง)
+- แฟลชผ่านด้วย **`--before default_reset`** (รอบนี้ DTR/RTS ทำงาน — ไม่ต้องจั๊ม IO0 แล้ว):
+  `Wrote 1503616 bytes (904257 compressed) at 0x00000000 ... Hash of data verified.`
+  ส่วน `--before no_reset` ยังล้ม (`No serial data received`) เพราะชิปรันแอปอยู่
+- boot log ตรงตามที่ต้องการ: `settings: loaded ... PIN '1234'` → `pairing: legacy PIN '1234'`
+  → `config portal opens after 60 s` → `no speaker after 60 s` → AP + HTTP ขึ้น
+- **ข้อควรระวัง**: `firmware.bin` เติมช่วง NVS ด้วย 0xFF ⇒ ค่าตั้งค่า/คู่ BT เดิมหาย
+  บอร์ดกลับไปใช้ Kconfig (`BT Speaker`, PIN `1234`) — ต้องเข้า portal ไปตั้ง PIN `0000`
+  ก่อนใช้งานกับรถ
+- **หมายเหตุเครื่องมือ**: `idf.py monitor` บนเครื่องนี้ crash ด้วย
+  `UnicodeEncodeError: 'charmap' codec ... cp874` เมื่อ redirect ลงไฟล์ ⇒ ต้องตั้ง
+  `PYTHONUTF8=1 PYTHONIOENCODING=utf-8` (log ที่ถูกต้องอยู่ที่ `monitor2.log`)
 
 ## ภาพรวมสถานะ
 
 | ส่วน | สถานะ |
 |---|---|
 | โค้ดบริดจ์ I2S → A2DP (`main/`) | ✅ เขียนครบ, build ผ่าน |
-| Flash ลงบอร์ด COM6 | ✅ ผ่าน (image 865,488 B) |
+| Flash ลงบอร์ด COM6 | ✅ ผ่าน (image 1,503,616 B, `default_reset`) |
 | บูต + Bluetooth Classic + A2DP/AVRCP | ✅ ผ่าน |
 | Self-test เส้นทางรับข้อมูล (loopback, 44.1k) | ✅ PASS (128 frames, L/R ถูก) |
 | Self-test เส้นทาง resample (loopback, 48k→44.1k) | ✅ PASS (117 frame ramp, ~3.27/frame) |
 | Self-test resampler 48k→44.1k (ระดับฟังก์ชัน) | ✅ PASS (1880/1881.6 frames) |
 | จับคู่ + stream ไปลำโพง "BT Speaker" จริง | ⚠️ จับคู่ได้, `BT=Streaming`, tone ป้อนข้อมูลแล้ว — แต่เสียงยังไม่ได้ยืนยันด้วยหู และ link หลุดหลัง ~15 s (heap หมด) |
 | รับ PCM จาก ESP32-S3 จริง | ❌ ยังไม่ได้ทดสอบ (ยังไม่ต่อสาย) |
-| Wi-Fi config portal (AP + หน้าเว็บ) | ⚠️ build ผ่าน + AP/HTTP ขึ้นจริง แต่ยังแฟลชบิลด์สุดท้ายไม่ลง (IO0) และยังไม่ได้ทดสอบ HTTP จาก client จริง |
+| Wi-Fi config portal (AP + หน้าเว็บ) | ✅ แฟลชลงบอร์ดแล้ว, portal ขึ้นที่ 60 s ตาม log (HTTP GET/POST จาก client จริงยังไม่ได้ทดสอบรอบนี้) |
+| รหัส PIN จับคู่แบบ Legacy | ⚠️ ตั้ง/บันทึกผ่านหน้าเว็บ–API ได้, log ยืนยันตอนบูต — ยังไม่ได้จับคู่กับเครื่องเล่นในรถจริง |
 | Soak test 30 นาที | ❌ ยังไม่ได้ทำ |
 | แก้ฝั่งโปรเจกต์ S3 (`setOutputSampleRate`) | ❌ ยังไม่ได้แก้ (อยู่นอก repo นี้) |
 
@@ -137,7 +169,9 @@ source /c/esp/idf-env.sh                          # ตั้ง PATH/IDF_PATH
 
 ```
 CONFIG_APP_BT_TARGET_NAME="BT Speaker"   # ตั้งตามลำโพงที่ทดสอบ
+CONFIG_APP_BT_PIN_CODE="1234"            # ตั้ง 0000 จากหน้าเว็บเมื่อใช้กับรถ
 # CONFIG_APP_BT_SSP is not set             # เปิดถ้าลำโพงรุ่นใหม่ต้องการ SSP
+CONFIG_APP_PORTAL_DELAY_S=60             # 1 นาที (เดิม 180)
 CONFIG_APP_OUTPUT_RATE_44100=y
 CONFIG_APP_INPUT_RATE_44100=y
 CONFIG_APP_I2S_BCLK_GPIO=14  WS=13  DATA=4

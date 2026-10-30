@@ -84,6 +84,7 @@ static esp_err_t state_get(httpd_req_t *req) {
   cJSON *json_settings = cJSON_AddObjectToObject(root, "settings");
   cJSON_AddStringToObject(json_settings, "target", settings->target_name);
   cJSON_AddStringToObject(json_settings, "local", settings->local_name);
+  cJSON_AddStringToObject(json_settings, "pin", settings->pin_code);
   cJSON_AddBoolToObject(json_settings, "ssp", settings->ssp_enabled);
   cJSON_AddNumberToObject(json_settings, "input_rate", settings->input_rate);
   cJSON_AddNumberToObject(json_settings, "output_rate", settings->output_rate);
@@ -157,6 +158,7 @@ static esp_err_t settings_post(httpd_req_t *req) {
   copy_string_field(root, "target", next.target_name,
                     sizeof(next.target_name));
   copy_string_field(root, "local", next.local_name, sizeof(next.local_name));
+  copy_string_field(root, "pin", next.pin_code, sizeof(next.pin_code));
   read_number_field(root, "input_rate", &next.input_rate);
   read_number_field(root, "buffer_ms", &next.buffer_ms);
 
