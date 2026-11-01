@@ -299,6 +299,13 @@ static bool stream_once(void) {
 
   size_t pending = 0;
   bool ok = true;
+  // Reads that return no data are normal: the socket is non-blocking, so a TLS
+  // record that is still in flight shows up as read()==0 with errno EAGAIN
+  // (surfaced here as ESP_FAIL). Only a long silence means the station is
+  // really gone - treating the first empty read as end-of-stream dropped a
+  // healthy connection every time the link hiccuped.
+  const int idle_limit_ms = 10000;
+  int idle_ms = 0;
 
   while (s_enabled && !s_paused) {
     if (s_restart) {
@@ -316,19 +323,23 @@ static bool stream_once(void) {
 
     int read = esp_http_client_read(client, (char *)(s_in + pending),
                                     (int)(sizeof(s_in) - pending));
-    if (read < 0) {
-      ESP_LOGW(TAG, "stream read failed: %s", esp_err_to_name((esp_err_t)read));
-      ok = false;
-      break;
-    }
-    if (read == 0) {
-      ESP_LOGW(TAG, "station closed the stream");
-      ok = false;
-      break;
+    if (read > 0) {
+      s_info.bytes += (uint32_t)read;
+      idle_ms = 0;
+      pending = decode_available(s_in, pending + (size_t)read);
+      continue;
     }
 
-    s_info.bytes += (uint32_t)read;
-    pending = decode_available(s_in, pending + (size_t)read);
+    idle_ms += 20;
+    if (idle_ms > idle_limit_ms) {
+      ESP_LOGW(TAG, "no data from the station for %d ms, reconnecting",
+               idle_ms);
+      ok = false;
+      break;
+    }
+    // Yield so the Wi-Fi and Bluetooth tasks can run: this loop is the only
+    // consumer of the socket.
+    vTaskDelay(pdMS_TO_TICKS(20));
   }
 
   s_info.connected = false;

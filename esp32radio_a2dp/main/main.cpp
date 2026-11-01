@@ -58,9 +58,9 @@ static void log_environment(void) {
            settings->stations[0].name[0] ? settings->stations[0].name
                                          : "(unnamed)",
            settings->stations[0].url);
-  ESP_LOGI(TAG, "Wi-Fi '%s' | A2DP %d Hz",
+  ESP_LOGI(TAG, "Wi-Fi '%s' | A2DP %d Hz | startup volume %u/127",
            settings->wifi_ssid[0] ? settings->wifi_ssid : "(not configured)",
-           APP_OUTPUT_SAMPLE_RATE);
+           APP_OUTPUT_SAMPLE_RATE, (unsigned)settings->volume);
 #if CONFIG_SPIRAM
   ESP_LOGI(TAG, "PSRAM %u bytes (jitter buffer and decode scratch live there)",
            (unsigned)esp_psram_get_size());
@@ -125,10 +125,13 @@ extern "C" void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(200));
     wifi_link_poll();
 
-    // Stream only while the A2DP audio is actually running: a connected but
-    // suspended speaker would just make the jitter buffer fill and stall, and
-    // resuming has to be a fresh, live connection anyway.
-    radio_stream_set_enabled(a2dp_source_is_streaming());
+    // Start pulling the station as soon as the speaker is connected, not only
+    // once it starts playing: that way the jitter buffer is already full when
+    // the first PCM is asked for. Filling late leaves the Bluetooth stack with
+    // nothing to send, so it pads silence, keeps the shared radio busy, and
+    // starves the very Wi-Fi reads that would refill the buffer (audible as
+    // constant stutter). Once the buffer is full the writer simply waits.
+    radio_stream_set_enabled(a2dp_source_is_connected());
 
     if (esp_timer_get_time() >= next_stats_us) {
       log_status();

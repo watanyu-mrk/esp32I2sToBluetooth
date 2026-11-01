@@ -3,8 +3,10 @@
 #include <string.h>
 
 #include "BluetoothA2DPSource.h"
+#include "esp_avrc_api.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -26,11 +28,42 @@ static volatile bool s_scanning = false;
 // its audio state event handler, and it only does so when a callback is
 // registered. Without one the bridge stays "suspended" forever and never feeds
 // any PCM, so this no-op handler is required even though it only logs.
+// Pushes the configured level to the speaker. The library skips a set_volume()
+// call whose value did not change, and a sink forgets the AVRCP volume when it
+// reconnects (it comes back at its own, usually maximum, level), so the cached
+// value is nudged one step first to make the absolute volume command go out
+// again on every start - not only on the first one after boot.
+static void push_startup_volume(void) {
+  // The stack reports the audio start more than once while a connection
+  // settles, so ignore repeats that arrive within two seconds of the last
+  // push.
+  static int64_t last_push_us = 0;
+  int64_t now = esp_timer_get_time();
+  if (last_push_us != 0 && now - last_push_us < 2000000) return;
+  last_push_us = now;
+
+  // The command goes straight to the sink instead of through the library's
+  // set_volume(): that one also enables its own volume scaling, which walks
+  // every PCM frame on the Bluetooth task (a measurable part of the audio
+  // budget on this chip) and re-sends the absolute volume whenever the sink
+  // reports a value of its own. The sink does the attenuation anyway.
+  uint8_t volume = app_settings_get()->volume;
+  if (volume > 0x7f) volume = 0x7f;
+  esp_avrc_ct_send_set_absolute_volume_cmd(0, volume);
+  ESP_LOGI(TAG, "startup volume %u/127 pushed to the speaker",
+           (unsigned)volume);
+}
+
 static void on_audio_state_changed(esp_a2d_audio_state_t state, void *obj) {
   (void)obj;
   // A running audio stream is a play request in itself (the speaker resumes
   // on its own after a reconnect), so it also lifts a remote pause.
-  if (state == ESP_A2D_AUDIO_STATE_STARTED) radio_stream_set_paused(false);
+  if (state == ESP_A2D_AUDIO_STATE_STARTED) {
+    radio_stream_set_paused(false);
+    // Only reachable while connected, which is what lets set_volume() forward
+    // the level to the speaker over AVRCP as well as applying it locally.
+    push_startup_volume();
+  }
   // In IDF 5.x ESP_A2D_AUDIO_STATE_STOPPED is an alias of ..._SUSPEND, so only
   // STARTED is worth telling apart.
   ESP_LOGI(TAG, "audio state: %s",

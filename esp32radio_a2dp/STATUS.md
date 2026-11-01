@@ -6,16 +6,17 @@
 ## สรุปสถานะ
 
 **ใช้งานได้จริงแล้ว:** บอร์ดรับสตรีม MP3 จากสถานีวิทยุผ่าน Wi-Fi → ถอดรหัส → ส่งออก
-ลำโพง Bluetooth ด้วย A2DP และ gated ให้เริ่มสตรีมเมื่อลำโพงเล่นจริงเท่านั้น
+ลำโพง Bluetooth ด้วย A2DP และเริ่มดึงสตรีมทันทีที่ลำโพงเชื่อมต่อ (เพื่อให้ jitter buffer
+เต็มก่อนเริ่มเล่น) — ยืนยันล่าสุด: ข้อมูลเข้า ~16 kB/s, buffer 82–99%, `underflow 0`
 ตั้งค่าลิงก์สถานี / Wi-Fi / ลำโพง ผ่านหน้าเว็บได้ตลอดเวลา (ไม่ต้องแฟลชใหม่)
 
 ## รอบล่าสุด — หลายสถานี + ปุ่ม Next/Previous สลับสถานี
 
-- ค่าตั้งเปลี่ยนจากสถานีเดียวเป็น **รายการสถานีไม่เกิน 6 รายการ** (`app_station_t`:
+- ค่าตั้งเปลี่ยนจากสถานีเดียวเป็น **รายการสถานีไม่เกิน 20 รายการ** (`app_station_t`:
   url 256 + name 33) — `SETTINGS_VERSION` 2 พร้อม **migrate ค่าเดิม v1**
   (URL/ชื่อสถานีเดิมกลายเป็นรายการแรก, Wi-Fi/PIN/ลำโพงยังอยู่ครบ)
 - หน้าเว็บมีรายการสถานี + ปุ่ม “＋ เพิ่มสถานี” / “ลบ” ต่อรายการ, แสดง “กำลังเล่น”
-  ตาม `radio.station`, ป้องกันรายการว่าง, จำกัด 6 สถานี
+  ตาม `radio.station`, ป้องกันรายการว่าง (ปัจจุบันจำกัด 20 สถานี)
 - `radio_stream`: เก็บ index สถานีปัจจุบัน, `radio_stream_next_station()` /
   `radio_stream_previous_station()` (วน modulo), เปลี่ยนสถานี = ล้าง buffer + ต่อใหม่
   ที่จุดสด; ถ้ามีสถานีเดียวจะ retune จุดสดเหมือนเดิม
@@ -36,6 +37,90 @@
   กระโดด ~1620 ครั้งตอนเปิด แต่ยังเล่นได้ (143 → 96 kbps)
 - **ยังไม่ได้ยืนยันปุ่ม Next (0x4b FORWARD)** — รอบนี้มีแต่ 0x4c เข้ามาใน log;
   โค้ดเส้นทางเดียวกัน (`switch_station(+1)`)
+
+## รอบล่าสุด (1 พ.ย. 2026) — ระดับเสียงตอนเริ่มเล่น
+
+- ค่าตั้งใหม่ `volume` (0–127) เก็บใน NVS, `SETTINGS_VERSION` 2 → **3** พร้อม
+  **migrate อัตโนมัติ** (รายการสถานี/Wi-Fi/ลำโพง/PIN คงอยู่, volume ใช้ค่าโรงงาน)
+- ค่าโรงงาน `CONFIG_APP_INITIAL_VOLUME` = **60**, หน้าเว็บมีสไลเดอร์
+  “ระดับเสียงตอนเริ่มเล่น (n/127)”, `/api/state` ส่ง `settings.volume`,
+  `POST /api/settings` รับ `volume` (เกิน 127 ถูก clamp เป็น 127)
+- `a2dp_source.cpp`: ตอน audio state เป็น `STARTED` จะเรียก `set_volume()` เพื่อ
+  **ส่ง AVRCP absolute volume ให้ลำโพง** (ลำโพงจำระดับเสียงเองไม่ได้ จึงต้องส่ง
+  ทุกครั้งที่เริ่มเล่น; กันการยิงซ้ำด้วย debounce 2 s และกัน `set_volume()` ที่
+  ไลบรารีข้ามเมื่อค่าไม่เปลี่ยน)
+- ยืนยันบนบอร์ด: `settings: migrated from the version 2 layout ... volume 60/127`,
+  `a2dp_src: startup volume n/127 pushed to the speaker`,
+  `RCCT: Set absolute volume response: volume n` — และ API: `{"volume":30}`
+  รีบูตแล้วได้ 30, `{"volume":200}` → 127
+
+## รอบล่าสุด (1 พ.ย. 2026) — ขยายเป็น 20 สถานี
+
+- `APP_SETTINGS_MAX_STATIONS` 6 → **20**; `SETTINGS_VERSION` 3 → **4** พร้อม migrate
+  จากรูปแบบ 6 สถานีเดิม (v2/v3) — รายการสถานี/Wi-Fi/ลำโพง/PIN/ระดับเสียงอยู่ครบ
+- บลอบค่าตั้งโตเป็น ~6 KB จึงย้ายบัฟเฟอร์ชั่วคราวไป **PSRAM**: บลอบที่เขียนลง NVS,
+  สำเนาสำหรับ validate และ body ของ POST (`SETTINGS_BODY_MAX` ≈ 7.5 KB);
+  `s_settings` ตัวจริงยังอยู่ใน internal RAM
+- `/api/state` ส่ง `max_stations` และหน้าเว็บใช้ค่านั้นเป็นลิมิตของปุ่มเพิ่มสถานี
+- **บักที่เจอตอนทดสอบ:** `app_settings_t next` เป็นตัวแปรบน stack ของ task httpd
+  (8192 B) — พอ struct โตเป็น ~6 KB task ตายตั้งแต่ POST แรก แล้วทุก request
+  หลังจากนั้น timeout (บอร์ดยังเล่นเพลงต่อ) → ย้ายไป PSRAM แล้ว
+- ยืนยันบนบอร์ด: บันทึก 20 สถานี (body 1443 B) ได้ `{"ok":true,"reboot":true}` ใน ~3 s,
+  รีบูตแล้วได้ครบ 20 รายการ, คืนรายการเดิมได้, หลังรีบูตกลับมา `radio playing` + `drop 0`
+
+## รอบล่าสุด (1 พ.ย. 2026) — เสียงกระตุกหนัก: read() คืน 0 = EAGAIN ไม่ใช่จบสตรีม
+
+**อาการ:** หลังอัปเดต เสียงขาด ๆ หาย ๆ เกือบทั้งเพลง (log บอร์ดขึ้น `radio reconnecting`
+เป็นรอบ ๆ ทุก ~15 s) วัดได้ข้อมูลจากสถานีเพียง **755 B/s** จากที่ต้องใช้ 16,000 B/s,
+buffer `0% (0/65536 fr)` และ `underflow` ~13,000–40,000 เฟรม/s (เงียบ ~75–100% ของเวลา)
+ทั้งที่ Wi-Fi `-57 dBm`, heap เหลือ ~28 KB, `l2cab is_cong` = 0
+
+**สาเหตุ:** `esp_http_client_read()` บนซ็อกเก็ต non-blocking ของ `esp_http_client`
+คืน **0** (หรือ `ERROR` เมื่อ errno = 11 = `EAGAIN`) ในจังหวะที่ TLS record ยังมาไม่ครบ
+ไม่ใช่สัญญาณว่าสถานีปิดสตรีม แต่ loop เดิมถือว่า 0 = จบสตรีม:
+
+```c
+if (read == 0) { ESP_LOGW(TAG, "station closed the stream"); ok = false; break; }
+```
+
+⇒ ทุกครั้งที่ข้อมูลสะดุดเสี้ยววินาที บอร์ดตัด connection ทิ้ง → ต่อใหม่ → เจอ EAGAIN อีก
+→ วนลูป reconnect ที่ไม่มีข้อมูลเข้าบัฟเฟอร์เลย หลักฐานใน log คือคู่
+`transport_base: esp_tls_conn_read error, errno=No more processes` +
+`HTTP_CLIENT: esp_transport_read returned:0 and errno:11` แล้วตามด้วย reconnect
+
+**แก้ที่ `main/radio_stream.c` (stream loop):**
+
+- `read > 0` → นับ `s_info.bytes`, รีเซ็ต idle timer, ถอดรหัสต่อ
+- `read == 0` หรือ error → **ไม่ตัดสายทันที**: `vTaskDelay(20 ms)` แล้วลองอ่านต่อ
+  (หยุดพักให้ task Wi-Fi/lwIP/Bluetooth ได้รัน ซึ่งเป็นผู้บริโภคซ็อกเก็ตตัวเดียวกัน)
+- ตัดสินว่าสตรีมตายเมื่อ **ไม่มีไบต์เข้าเลยติดต่อกัน 10,000 ms** → log
+  `no data from the station for 10010 ms, reconnecting` แล้วค่อยต่อใหม่
+
+**ทดลองประกอบ (ระหว่างหาสาเหตุ):** ขยาย `CONFIG_LWIP_TCP_WND_DEFAULT` 5760 → 23400
+ไม่ช่วย (ไม่ใช่คอขวด window/RTT) จึง**คืนค่า 5760** ตามเดิมเพื่อประหยัด RAM
+
+**ผลวัดหลังแฟลช (COM6, เก็บ log 90 s ระหว่างเล่นจริง):**
+
+| ตัวชี้วัด | ก่อนแก้ | หลังแก้ |
+|---|---|---|
+| ข้อมูลจากสถานี | 755 B/s | **16,000–16,900 B/s** |
+| jitter buffer | `0% (0/65536 fr)` | **82–99%** |
+| underflow / ความเงียบ | ~44,000 เฟรม/s (เงียบ 100%) | **0 เฟรม ใน ~70 s** |
+| `read failed` / reconnect | ทุก ~15 s | **0** |
+| BT congestion (`l2cab is_cong`) | เป็นรอบ ๆ | **0** |
+| heap (`MALLOC_CAP_INTERNAL`) | 27–28 KB | ~28 KB คงที |
+
+**แก้ควบคู่ในรอบเดียวกัน (คนละเรื่องกับ EAGAIN แต่ช่วยเรื่องเดียว):**
+
+- `main.cpp`: เปลี่ยนเงื่อนไขเปิดสตรีมจาก `a2dp_source_is_streaming()` เป็น
+  `a2dp_source_is_connected()` — เริ่มดึงข้อมูลตั้งแต่ลำโพงเชื่อมต่อ บัฟเฟอร์จึงเต็มก่อน
+  ที่ PCM ก้อนแรกจะถูกขอ (เดิมบัฟเฟอร์ว่างตอนเริ่ม → BT ยิง silence รัว → แย่งวิทยุกับ Wi-Fi)
+- `main/a2dp_source.cpp`: เลิกใช้ `set_volume()` ของไลบรารีในเส้นทางเสียง (มันเปิด
+  software volume scaling ที่ไล่คูณทุกเฟรมบน task Bluetooth) แล้วส่ง AVRCP absolute volume
+  ผ่าน `esp_avrc_ct_send_set_absolute_volume_cmd()` ตรง ๆ แทน
+
+**ข้อสังเกต:** การวัดรอบที่ลำโพงหลุด (`BT Disconnected` / `radio idle (no speaker)` หลังแฟลช)
+ตัวเลขจะเพี้ยนเป็น 0 — ต้องรอ `BT Streaming` ก่อนวัด; รอบนี้ระบบต่อกลับเองได้ในไม่กี่วินาที
 
 ## ยืนยันบนฮาร์ดแวร์แล้ว
 
