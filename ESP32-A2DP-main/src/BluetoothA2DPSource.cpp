@@ -1213,6 +1213,18 @@ void BluetoothA2DPSource::av_hdl_avrc_tg_evt(uint16_t event, void *p_param) {
     case ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT: {
       ESP_LOGI(BT_AV_TAG, "AVRC register event notification: %d, param: 0x%x",
                rc->reg_ntf.event_id, rc->reg_ntf.event_parameter);
+      // A sink registers for the play status and only opens the A2DP stream
+      // once the source reports PLAYING: car head units stay on "paused" and
+      // never start streaming when this notification is never answered.
+      if (rc->reg_ntf.event_id == ESP_AVRC_RN_PLAY_STATUS_CHANGE) {
+        esp_avrc_rn_param_t rn_param = {};
+        rn_param.playback = ESP_AVRC_PLAYBACK_PLAYING;
+        if (esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_STATUS_CHANGE,
+                                    ESP_AVRC_RN_RSP_INTERIM,
+                                    &rn_param) != ESP_OK) {
+          ESP_LOGE(BT_AV_TAG, "esp_avrc_tg_send_rn_rsp(play status) failed");
+        }
+      }
       if (rc->reg_ntf.event_id == ESP_AVRC_RN_VOLUME_CHANGE) {
         ESP_LOGW(BT_AV_TAG, "ESP_AVRC_RN_VOLUME_CHANGE");
         // s_volume_notify = true;

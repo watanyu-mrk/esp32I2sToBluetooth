@@ -34,6 +34,16 @@ static void on_audio_state_changed(esp_a2d_audio_state_t state, void *obj) {
                                                 : "suspended/stopped");
 }
 
+// AVRCP Target: the library only initialises the TG role (and its SDP record)
+// when a passthrough callback is registered - see av_hdl_stack_evt(). Speakers
+// do not care, but car head units are AVRCP controllers: they ask the source
+// for its playback state and keep the A2DP stream closed until they get an
+// answer, which looks exactly like "connected, but no sound".
+static void on_passthru_command(uint8_t key_code, bool is_released) {
+  if (is_released) return;
+  ESP_LOGI(TAG, "AVRCP key 0x%02x pressed on the sink", key_code);
+}
+
 // Called by the Bluetooth stack whenever it needs more PCM. It must return
 // quickly: read what is buffered, pad the rest with silence, and never block.
 static int32_t provide_audio(uint8_t *data, int32_t len) {
@@ -108,6 +118,11 @@ void a2dp_source_start(void) {
 
   // Required for is_streaming() to ever become true (see the handler above).
   s_source.set_on_audio_state_changed(on_audio_state_changed);
+
+  // Enables the AVRCP Target role: car head units show "paused" and never
+  // start streaming without it. Must be set before start(), because the TG is
+  // brought up with the stack.
+  s_source.set_avrc_passthru_command_callback(on_passthru_command);
 
   // Both callbacks are also what turns the plain discovery into a usable
   // "which speakers are nearby" list for the config page.
