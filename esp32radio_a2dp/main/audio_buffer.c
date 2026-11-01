@@ -10,31 +10,27 @@
 
 static const char *TAG = "audio_buf";
 
-// Capacity is a power of two so the indices can wrap with a mask. head/tail
+// Capacity is an exact frame count, so the ring wraps with a modulo. Indices
 // are free running frame counters; the difference is the number of frames
 // currently buffered.
 static int16_t *s_samples;
 static size_t s_capacity_frames;
-static size_t s_mask;
 
 static atomic_size_t s_head;
 static atomic_size_t s_tail;
 static atomic_uint_fast32_t s_dropped_frames;
 static atomic_uint_fast32_t s_underflow_frames;
 
-static size_t next_power_of_two(size_t value) {
-  size_t result = 1;
-  while (result < value) result <<= 1;
-  return result;
-}
-
 bool audio_buffer_init(size_t capacity_bytes) {
   if (s_samples != NULL) return true;
 
+  // The ring wraps with a modulo instead of masking with a power-of-two - 1, so
+  // the buffer really holds the number of milliseconds the setting asks for.
+  // Rounding up to a power of two collapsed 200-740 ms into one 743 ms step,
+  // which made the jitter buffer slider look like it did nothing.
   size_t frames = capacity_bytes / APP_BYTES_PER_FRAME;
   if (frames < 256) frames = 256;
-  size_t requested_frames = next_power_of_two(frames);
-  frames = requested_frames;
+  size_t requested_frames = frames;
 
   // PSRAM first: the WROVER has 8 MB there and the Bluetooth and Wi-Fi stacks
   // need every internal byte. The buffer is written by the decode task and
@@ -69,7 +65,6 @@ bool audio_buffer_init(size_t capacity_bytes) {
   }
 
   s_capacity_frames = frames;
-  s_mask = frames - 1;
   atomic_store(&s_head, 0);
   atomic_store(&s_tail, 0);
   atomic_store(&s_dropped_frames, 0);
@@ -85,7 +80,6 @@ void audio_buffer_deinit(void) {
   free(s_samples);
   s_samples = NULL;
   s_capacity_frames = 0;
-  s_mask = 0;
 }
 
 size_t audio_buffer_write(const int16_t *frames, size_t count) {
@@ -103,7 +97,7 @@ size_t audio_buffer_write(const int16_t *frames, size_t count) {
     return 0;
   }
 
-  size_t start = head & s_mask;
+  size_t start = head % s_capacity_frames;
   size_t first = s_capacity_frames - start;
   if (first > count) first = count;
 
@@ -127,7 +121,7 @@ size_t audio_buffer_read(int16_t *frames, size_t count) {
   if (count > available) count = available;
   if (count == 0) return 0;
 
-  size_t start = tail & s_mask;
+  size_t start = tail % s_capacity_frames;
   size_t first = s_capacity_frames - start;
   if (first > count) first = count;
 

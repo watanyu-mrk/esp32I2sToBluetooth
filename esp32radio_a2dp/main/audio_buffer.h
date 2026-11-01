@@ -17,7 +17,8 @@ typedef struct {
   uint32_t underflow_frames;  // consumer ran short and padded with silence
 } audio_buffer_stats_t;
 
-// capacity_bytes is rounded up to a power of two number of frames.
+// capacity_bytes is used as given (whole frames, at least 256), so the buffer
+// holds exactly the requested duration.
 bool audio_buffer_init(size_t capacity_bytes);
 void audio_buffer_deinit(void);
 
