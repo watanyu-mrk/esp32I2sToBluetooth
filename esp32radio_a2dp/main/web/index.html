@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32 Radio → Bluetooth</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; padding: 16px; max-width: 560px;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.45;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  h2 { font-size: 1rem; margin: 0 0 10px; }
+  .sub { font-size: .8rem; opacity: .65; margin: 0 0 12px; }
+  section {
+    border: 1px solid #8884; border-radius: 10px;
+    padding: 14px; margin-bottom: 14px;
+  }
+  label { display: block; font-size: .85rem; opacity: .8; margin: 10px 0 4px; }
+  label.inline { display: flex; align-items: center; gap: 8px; font-size: .95rem; opacity: 1; }
+  input[type=text], input[type=password], input[type=number], input[type=url], select {
+    width: 100%; padding: 9px 10px; font-size: 1rem;
+    border: 1px solid #8886; border-radius: 8px; background: transparent; color: inherit;
+  }
+  input[type=url] { font-size: .95rem; }
+  .fixed { padding: 9px 10px; border: 1px dashed #8886; border-radius: 8px; font-size: .95rem; }
+  button {
+    font: inherit; padding: 9px 14px; border-radius: 8px;
+    border: 1px solid #8886; background: transparent; color: inherit; cursor: pointer;
+  }
+  button.primary { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600; }
+  button.small { padding: 5px 10px; font-size: .85rem; }
+  button.danger { border-color: #dc262666; color: #dc2626; }
+  button:disabled { opacity: .5; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .status { font-size: .9rem; padding: 10px 12px; border-radius: 8px; margin: 0 0 8px; }
+  .status.ok { background: #16a34a22; border: 1px solid #16a34a66; }
+  .status.warn { background: #d9770622; border: 1px solid #d9770666; }
+  .status.bad { background: #dc262622; border: 1px solid #dc262666; }
+  .stats { font-size: .8rem; opacity: .75; margin: 0 0 14px; font-variant-numeric: tabular-nums; }
+  ul#stations, ul#devices { list-style: none; margin: 10px 0 0; padding: 0; }
+  ul#stations li {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 10px;
+    padding: 8px 0; border-top: 1px solid #8883;
+  }
+  ul#stations li.playing .st-title { color: #16a34a; font-weight: 600; }
+  ul#stations li .st-title { font-size: .95rem; overflow: hidden; text-overflow: ellipsis; }
+  ul#stations li .st-url { font-size: .75rem; opacity: .6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ul#stations li button { grid-row: 1 / span 2; grid-column: 2; align-self: center; }
+  ul#devices li { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid #8883; }
+  ul#devices li .pick { flex: 0 0 auto; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ul#devices li .meta { font-size: .78rem; opacity: .65; font-variant-numeric: tabular-nums; }
+  .add { border-top: 1px dashed #8884; margin-top: 12px; padding-top: 4px; }
+  .hint { font-size: .8rem; opacity: .65; margin: 10px 0 0; }
+  footer { font-size: .78rem; opacity: .6; margin-top: 18px; }
+</style>
+</head>
+<body>
+<h1>ESP32 Radio → Bluetooth Speaker</h1>
+<p class="sub">ฟังสถานีวิทยุอินเทอร์เน็ตผ่านลำโพง Bluetooth · ปุ่ม Next/Previous บนลำโพงสลับสถานี</p>
+
+<p class="status" id="status">กำลังโหลด…</p>
+<p class="stats" id="stats"></p>
+
+<section>
+  <h2>สถานีวิทยุ <span class="hint" id="station-count" style="display:inline"></span></h2>
+  <ul id="stations"></ul>
+  <p class="hint" id="stations-hint">กด “ลบ” เพื่อเอาสถานีออก แล้วกดบันทึก</p>
+
+  <div class="add">
+    <label for="new-name">ชื่อสถานี (ไม่บังคับ)</label>
+    <input id="new-name" type="text" maxlength="32" autocomplete="off" placeholder="เช่น COOLfahrenheit">
+    <label for="new-url">ลิงก์สตรีม (http:// หรือ https:// · MP3)</label>
+    <input id="new-url" type="url" maxlength="255" autocomplete="off" spellcheck="false"
+           placeholder="https://example.com/;stream/1">
+    <div class="row"><button type="button" id="add-station">＋ เพิ่มสถานี</button></div>
+    <p class="hint">เพิ่มได้สูงสุด 6 สถานี · ต้องเป็นลิงก์ MP3 โดยตรง (ไม่ใช่ .m3u/.pls หรือ HLS)</p>
+  </div>
+</section>
+
+<section>
+  <h2>Wi-Fi</h2>
+  <label for="ssid">ชื่อเครือข่าย (SSID)</label>
+  <input id="ssid" type="text" maxlength="32" autocomplete="off" spellcheck="false" placeholder="ชื่อ Wi-Fi ที่บ้าน">
+  <label for="password">รหัสผ่าน Wi-Fi</label>
+  <input id="password" type="password" maxlength="63" autocomplete="new-password" placeholder="เว้นว่างได้ถ้าเป็นเครือข่ายเปิด">
+  <p class="hint">บอร์ดต้องต่อ Wi-Fi นี้เพื่อเล่นวิทยุ · ถ้าต่อไม่ได้ บอร์ดจะเปิด AP
+    <strong>ESP32-Radio-Setup</strong> (รหัส <strong>esp32radio</strong>) ให้เข้ามาตั้งค่าใหม่ที่ http://192.168.4.1/</p>
+</section>
+
+<section>
+  <h2>ลำโพง Bluetooth</h2>
+  <label for="target">ชื่อลำโพง (เชื่อมต่อตัวที่ชื่อขึ้นต้นด้วยข้อความนี้ — เว้นว่าง = ตัวแรกที่เจอ)</label>
+  <input id="target" type="text" maxlength="32" list="device-names" autocomplete="off" placeholder="เช่น BT Speaker">
+  <datalist id="device-names"></datalist>
+  <ul id="devices"></ul>
+  <p class="hint" id="scan-hint">กำลังค้นหาอุปกรณ์…</p>
+  <div class="row"><button type="button" id="rescan">ล้างรายการแล้วค้นหาใหม่</button></div>
+</section>
+
+<section>
+  <h2>บอร์ดนี้</h2>
+  <label for="local">ชื่อที่ประกาศผ่าน Bluetooth</label>
+  <input id="local" type="text" maxlength="32" autocomplete="off">
+  <label for="pin">รหัส PIN สำหรับจับคู่แบบ Legacy (1–16 หลัก)</label>
+  <input id="pin" type="text" inputmode="numeric" maxlength="16" pattern="[0-9]*" autocomplete="off" placeholder="เช่น 0000">
+  <p class="hint">ใช้ตอบเมื่ออุปกรณ์ปลายทางขอรหัส เช่น เครื่องเล่นในรถที่ต้องใส่ 0000 — เว้นว่าง = ใช้ค่าเริ่มต้นของไลบรารี (1234)</p>
+  <label class="inline"><input type="checkbox" id="ssp"> ใช้ Secure Simple Pairing (SSP)</label>
+  <p class="hint">ปิดไว้สำหรับเครื่องเล่น/ลำโพงรุ่นเก่าที่ขอรหัส PIN แบบเดิม</p>
+</section>
+
+<section>
+  <h2>เสียง</h2>
+  <label for="buffer_ms">ขนาด jitter buffer (200–3000 ms)</label>
+  <input id="buffer_ms" type="number" min="200" max="3000" step="50">
+  <p class="hint">บัฟเฟอร์ที่ใหญ่ขึ้นทนช่วงที่ Wi-Fi สะดุดได้นานขึ้น แต่เสียงจะช้าลง</p>
+  <label>A2DP ส่งออกที่</label>
+  <div class="fixed">44100 Hz · PCM16 stereo</div>
+  <p class="hint">SBC encoder ของ Bluedroid รับ PCM 44100 Hz คงที่ สตรีมที่มาในอัตราอื่นจะถูกแปลงให้อัตโนมัติ</p>
+</section>
+
+<div class="row">
+  <button id="save" class="primary">บันทึกและรีสตาร์ท</button>
+  <button id="reboot">รีสตาร์ทอย่างเดียว</button>
+</div>
+<p class="hint">หลังบันทึก บอร์ดจะรีสตาร์ท 1 รอบ แล้วกลับไปเชื่อมต่อ Wi-Fi/ลำโพงด้วยค่าใหม่</p>
+
+<footer>
+  หน้าตั้งค่านี้เข้าถึงได้จาก IP ของบอร์ดในวง Wi-Fi เดียวกัน หรือ AP
+  <strong>ESP32-Radio-Setup</strong> (รหัส <strong>esp32radio</strong>) ที่ http://192.168.4.1/
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var MAX_STATIONS = 6;
+  var stations = [];
+  var loaded = false;
+  var playingIndex = -1;
+
+  function $(id) { return document.getElementById(id); }
+
+  function setStatus(message, kind) {
+    var el = $("status");
+    el.textContent = message;
+    el.className = "status " + kind;
+  }
+
+  function stationLabel(station, index) {
+    return station.name && station.name.length
+      ? (index + 1) + ". " + station.name
+      : (index + 1) + ". " + station.url;
+  }
+
+  function renderStations() {
+    var list = $("stations");
+    list.innerHTML = "";
+
+    stations.forEach(function (station, index) {
+      var row = document.createElement("li");
+      if (index === playingIndex) row.className = "playing";
+
+      var title = document.createElement("div");
+      title.className = "st-title";
+      title.textContent = stationLabel(station, index) +
+        (index === playingIndex ? "  (กำลังเล่น)" : "");
+
+      var url = document.createElement("div");
+      url.className = "st-url";
+      url.textContent = station.url;
+
+      var remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "small danger";
+      remove.textContent = "ลบ";
+      remove.addEventListener("click", function () {
+        stations.splice(index, 1);
+        renderStations();
+        setStatus("ลบสถานีออกจากรายการแล้ว — กดบันทึกเพื่อใช้งาน", "warn");
+      });
+
+      row.appendChild(title);
+      row.appendChild(remove);
+      row.appendChild(url);
+      list.appendChild(row);
+    });
+
+    $("station-count").textContent = "(" + stations.length + "/" + MAX_STATIONS + ")";
+    $("add-station").disabled = stations.length >= MAX_STATIONS;
+    $("stations-hint").textContent = stations.length
+      ? "แตะ “ลบ” เพื่อเอาสถานีออก · ปุ่ม Next/Previous บนลำโพงจะวนตามลำดับนี้"
+      : "ยังไม่มีสถานี — เพิ่มอย่างน้อย 1 สถานีแล้วกดบันทึก";
+  }
+
+  function addStation() {
+    var name = $("new-name").value.trim();
+    var url = $("new-url").value.trim();
+
+    if (!/^https?:\/\/.+/i.test(url)) {
+      setStatus("ลิงก์สถานีต้องขึ้นต้นด้วย http:// หรือ https://", "warn");
+      return;
+    }
+    if (stations.length >= MAX_STATIONS) {
+      setStatus("เพิ่มได้สูงสุด " + MAX_STATIONS + " สถานี", "warn");
+      return;
+    }
+
+    stations.push({ url: url, name: name });
+    $("new-name").value = "";
+    $("new-url").value = "";
+    renderStations();
+    setStatus("เพิ่มสถานีแล้ว — กดบันทึกเพื่อใช้งาน", "warn");
+  }
+
+  function renderDevices(devices, scanning) {
+    var list = $("devices");
+    var names = $("device-names");
+    list.innerHTML = "";
+    names.innerHTML = "";
+
+    devices.forEach(function (device) {
+      var option = document.createElement("option");
+      option.value = device.name;
+      names.appendChild(option);
+
+      var row = document.createElement("li");
+      var pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "pick";
+      pick.textContent = device.name;
+      pick.addEventListener("click", function () {
+        $("target").value = device.name;
+        setStatus("เลือกลำโพง \"" + device.name + "\" แล้ว — กดบันทึกเพื่อใช้งาน", "warn");
+      });
+
+      var meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = device.addr + " · " + device.rssi + " dBm";
+
+      row.appendChild(pick);
+      row.appendChild(meta);
+      list.appendChild(row);
+    });
+
+    $("scan-hint").textContent = scanning
+      ? "กำลังค้นหาอุปกรณ์…"
+      : (devices.length
+          ? "แตะชื่อลำโพงเพื่อเลือก"
+          : "ยังไม่พบลำโพง — เปิดลำโพงให้อยู่ในโหมดจับคู่ แล้วรอสักครู่");
+  }
+
+  function render(state) {
+    var wifi = state.wifi || {};
+    var radio = state.radio || {};
+    var buffer = state.buffer || {};
+    var connected = state.connected;
+
+    var wifiText = wifi.ip
+      ? ("Wi-Fi: " + wifi.state + " · " + wifi.ip + (wifi.rssi ? " · " + wifi.rssi + " dBm" : ""))
+      : ("Wi-Fi: " + (wifi.state || "?") + (wifi.ap ? " · เข้าที่ http://192.168.4.1/" : ""));
+
+    var nowPlaying = "";
+    if (radio.station_name) {
+      nowPlaying = " — " + radio.station_name;
+    } else if (state.settings && state.settings.stations &&
+               state.settings.stations.length) {
+      nowPlaying = " — " + (state.settings.stations[0].name || "สถานี 1");
+    }
+
+    setStatus(
+      wifiText + " — Bluetooth: " + state.bt +
+      (connected ? " — วิทยุ: " + radio.state + nowPlaying : " (ยังไม่ต่อลำโพง)"),
+      connected ? "ok" : (wifi.ip ? "warn" : "bad")
+    );
+
+    var stats = [];
+    if (radio.state && connected) {
+      stats.push(radio.state);
+      if (radio.kbps) stats.push(radio.kbps + " kbps");
+      if (radio.rate) stats.push(radio.rate + " Hz");
+      if (radio.channels) stats.push(radio.channels + " ch");
+    }
+    if (buffer.capacity) {
+      stats.push("buffer " + Math.round(buffer.frames * 100 / buffer.capacity) + "%");
+      stats.push("underflow " + buffer.underflow + " fr");
+      if (buffer.dropped) stats.push("dropped " + buffer.dropped + " fr");
+    }
+    if (radio.errors) stats.push("decode err " + radio.errors);
+    if (radio.failures) stats.push("retry " + radio.failures);
+    $("stats").textContent = stats.join(" · ");
+
+    if (!loaded) {
+      stations = (state.settings.stations || []).map(function (station) {
+        return { url: station.url, name: station.name || "" };
+      });
+      $("ssid").value = state.settings.ssid;
+      $("password").value = state.settings.password;
+      $("target").value = state.settings.target;
+      $("local").value = state.settings.local;
+      $("pin").value = state.settings.pin;
+      $("ssp").checked = state.settings.ssp;
+      $("buffer_ms").value = state.settings.buffer_ms;
+      loaded = true;
+    }
+
+    playingIndex = typeof radio.station === "number" ? radio.station : -1;
+    renderStations();
+    renderDevices(state.devices || [], state.scanning);
+  }
+
+  function fetchState() {
+    return fetch("/api/state", { cache: "no-store" })
+      .then(function (response) { return response.json(); })
+      .then(render)
+      .catch(function () {
+        setStatus("ขาดการเชื่อมต่อกับบอร์ด — ต่อ Wi-Fi ของบอร์ดหรือเครือข่ายเดิมแล้วโหลดหน้าใหม่",
+                  "bad");
+      });
+  }
+
+  function post(url, payload) {
+    return fetch(url, {
+      method: "POST",
+      headers: payload ? { "Content-Type": "application/json" } : {},
+      body: payload ? JSON.stringify(payload) : null
+    }).then(function (response) { return response.json(); });
+  }
+
+  $("add-station").addEventListener("click", addStation);
+  $("new-url").addEventListener("keydown", function (event) {
+    if (event.key === "Enter") { event.preventDefault(); addStation(); }
+  });
+
+  $("save").addEventListener("click", function () {
+    var buffer = Number($("buffer_ms").value);
+    if (!isFinite(buffer) || buffer < 200 || buffer > 3000) {
+      setStatus("ขนาด buffer ต้องอยู่ระหว่าง 200–3000 ms", "warn");
+      return;
+    }
+    if (stations.length === 0) {
+      setStatus("ต้องมีอย่างน้อย 1 สถานี", "warn");
+      return;
+    }
+
+    var pin = $("pin").value.trim();
+    if (pin !== "" && !/^[0-9]{1,16}$/.test(pin)) {
+      setStatus("รหัส PIN ต้องเป็นตัวเลข 1–16 หลัก (หรือเว้นว่าง)", "warn");
+      return;
+    }
+
+    $("save").disabled = true;
+    post("/api/settings", {
+      stations: stations,
+      ssid: $("ssid").value.trim(),
+      password: $("password").value,
+      target: $("target").value.trim(),
+      local: $("local").value.trim(),
+      pin: pin,
+      ssp: $("ssp").checked,
+      buffer_ms: buffer
+    }).then(function (result) {
+      if (result.ok) {
+        setStatus("บันทึกแล้ว กำลังรีสตาร์ท… (ถ้าหน้าเว็บค้างให้โหลดใหม่)", "ok");
+      } else {
+        setStatus("บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง", "bad");
+        $("save").disabled = false;
+      }
+    }).catch(function () {
+      setStatus("ติดต่อบอร์ดไม่ได้ระหว่างบันทึก", "bad");
+      $("save").disabled = false;
+    });
+  });
+
+  $("reboot").addEventListener("click", function () {
+    if (!window.confirm("รีสตาร์ทบอร์ดตอนนี้?")) return;
+    post("/api/reboot").catch(function () {});
+    setStatus("กำลังรีสตาร์ท…", "warn");
+  });
+
+  $("rescan").addEventListener("click", function () {
+    $("devices").innerHTML = "";
+    $("scan-hint").textContent = "กำลังค้นหาใหม่…";
+    post("/api/rescan").catch(function () {});
+  });
+
+  fetchState();
+  setInterval(fetchState, 2000);
+})();
+</script>
+</body>
+</html>

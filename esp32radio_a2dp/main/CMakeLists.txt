@@ -1,0 +1,30 @@
+idf_component_register(
+    SRCS
+        "main.cpp"
+        "a2dp_source.cpp"
+        "radio_stream.c"
+        "wifi_link.c"
+        "config_portal.c"
+        "audio_buffer.c"
+        "resampler.c"
+        "app_settings.c"
+        "bt_scan.c"
+    INCLUDE_DIRS "."
+    EMBED_FILES "web/index.html"
+    REQUIRES
+        ESP32-A2DP
+        arduino-audio-tools
+        esp_http_client
+        esp_http_server
+        esp-tls
+        mbedtls
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_timer
+        json
+        nvs_flash
+        esp_hw_support
+        esp_psram
+        spi_flash
+)

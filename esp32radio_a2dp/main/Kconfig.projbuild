@@ -1,0 +1,92 @@
+menu "ESP32 Internet radio to A2DP source"
+
+config APP_STATION_URL
+    string "Radio station stream URL (factory default)"
+    default "https://coolism-web.cdn.byteark.com/;stream/1"
+    help
+        Direct MP3 stream URL (http:// or https://). Playlists, HLS and AAC
+        streams are not supported.
+
+        This is only the factory default: the URL can be changed at runtime
+        from the web page stored in NVS, which overrides this value.
+
+config APP_STATION_NAME
+    string "Station name shown on the web page"
+    default "COOLfahrenheit"
+    help
+        Free text, used for logging and in the config page header.
+
+config APP_WIFI_SSID
+    string "Wi-Fi network to join (factory default)"
+    default ""
+    help
+        SSID of the access point the board uses to reach the station. Leave
+        empty to boot straight into the setup access point.
+
+        This is only the factory default: the network can be changed at
+        runtime from the config web page.
+
+config APP_WIFI_PASSWORD
+    string "Wi-Fi password (factory default)"
+    default ""
+
+config APP_WIFI_JOIN_TIMEOUT_S
+    int "Raise the setup access point after this many seconds without Wi-Fi"
+    default 25
+    range 5 300
+    help
+        While the board cannot join the configured network the config page is
+        unreachable, so after this long the board also starts its own access
+        point (SSID ESP32-Radio-Setup) and keeps retrying the configured
+        network in the background.
+
+config APP_AUDIO_BUFFER_MS
+    int "Jitter buffer size (ms)"
+    default 1000
+    range 200 3000
+    help
+        Decoded PCM kept between the MP3 decoder and the Bluetooth stack.
+        Internet streams arrive in bursts and the Wi-Fi/Bluetooth radio
+        sharing adds gaps, so this buffer is what keeps the audio continuous.
+        Larger values survive longer dropouts but delay the audio.
+
+config APP_BT_DEVICE_NAME
+    string "Local Bluetooth name"
+    default "ESP32-Radio-A2DP"
+    help
+        Name advertised by this board over Bluetooth Classic.
+
+config APP_BT_TARGET_NAME
+    string "Bluetooth speaker name to connect to"
+    default ""
+    help
+        The A2DP source connects to the first discovered device whose name
+        starts with this string. Leave empty to connect to the first
+        discoverable A2DP sink.
+
+config APP_BT_PIN_CODE
+    string "Legacy pairing PIN code (1-16 digits)"
+    default "1234"
+    help
+        PIN code this board answers with when the sink asks for a legacy
+        pairing code. Many car head units expect "0000".
+
+        Only the factory default: the value can be changed at runtime from
+        the web page. Leave empty to keep the A2DP library default.
+
+config APP_BT_SSP
+    bool "Use Secure Simple Pairing (SSP)"
+    default n
+    help
+        Enable Bluetooth Secure Simple Pairing for speakers that reject the
+        legacy PIN handshake. This board has no display and no keypad, so the
+        numeric comparison value is accepted automatically.
+
+        Leave this off for older speakers that only support legacy pairing.
+
+config APP_STATS_INTERVAL_MS
+    int "Status log interval (ms)"
+    default 5000
+    range 1000 60000
+
+endmenu

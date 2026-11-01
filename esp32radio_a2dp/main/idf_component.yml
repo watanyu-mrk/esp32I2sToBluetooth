@@ -1,0 +1,5 @@
+## Managed dependency: fixed-point Helix MP3 decoder (the same decoder the
+## ESP-ADF MP3 element uses). The first build downloads it into
+## managed_components/, after that the build works offline.
+dependencies:
+  chmorgan/esp-libhelix-mp3: "^1.0.3"
