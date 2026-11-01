@@ -25,6 +25,11 @@
 #define APP_BT_PIN_CODE CONFIG_APP_BT_PIN_CODE
 #define APP_BT_RECONNECT_TRIES 1000
 
+// A2DP volume is 0-127 (127 = the speaker's maximum). The board applies this
+// value whenever the speaker starts playing, so a power cycle does not bring
+// the audio back at full blast.
+#define APP_INITIAL_VOLUME CONFIG_APP_INITIAL_VOLUME
+
 #if CONFIG_APP_BT_SSP
 #define APP_BT_SSP_ENABLED 1
 #else

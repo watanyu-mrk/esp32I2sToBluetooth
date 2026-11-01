@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -25,6 +26,19 @@ extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 
 static httpd_handle_t s_server;
+
+// One POST carries the whole settings form: every station plus the other
+// fields, JSON-encoded. With the full station list that is several kilobytes,
+// more than internal RAM can spare, so the buffer lives in PSRAM.
+#define SETTINGS_BODY_MAX                                    \
+  (APP_SETTINGS_MAX_STATIONS *                               \
+       (APP_SETTINGS_URL_LEN + APP_SETTINGS_NAME_LEN + 64) + \
+   512)
+static char *s_body;
+// The settings struct is several kilobytes once the station list is full, so
+// the working copy for a POST lives in PSRAM: as a local it overflowed the
+// 8 KB httpd task stack and killed the server.
+static app_settings_t *s_next;
 
 static void reboot_task(void *arg) {
   (void)arg;
@@ -60,6 +74,7 @@ static esp_err_t state_get(httpd_req_t *req) {
   cJSON_AddStringToObject(root, "bt", a2dp_source_state());
   cJSON_AddBoolToObject(root, "connected", a2dp_source_is_connected());
   cJSON_AddBoolToObject(root, "scanning", a2dp_source_is_scanning());
+  cJSON_AddNumberToObject(root, "max_stations", APP_SETTINGS_MAX_STATIONS);
 
   cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
   cJSON_AddStringToObject(wifi, "state", wifi_link_state_text());
@@ -105,6 +120,7 @@ static esp_err_t state_get(httpd_req_t *req) {
   cJSON_AddStringToObject(json_settings, "pin", settings->pin_code);
   cJSON_AddBoolToObject(json_settings, "ssp", settings->ssp_enabled);
   cJSON_AddNumberToObject(json_settings, "buffer_ms", settings->buffer_ms);
+  cJSON_AddNumberToObject(json_settings, "volume", settings->volume);
 
   cJSON *devices = cJSON_AddArrayToObject(root, "devices");
   bt_scan_device_t found[BT_SCAN_MAX_DEVICES];
@@ -176,12 +192,21 @@ static bool read_number_field(const cJSON *root, const char *key,
 static esp_err_t settings_post(httpd_req_t *req) {
   // The page sends every field at once: up to APP_SETTINGS_MAX_STATIONS full
   // URLs plus the Wi-Fi/Bluetooth fields.
-  if (req->content_len == 0 || req->content_len > 3584) {
+  if (req->content_len == 0 || req->content_len >= SETTINGS_BODY_MAX) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad body");
     return ESP_FAIL;
   }
 
-  static char body[3585];
+  if (s_body == NULL) {
+    s_body = heap_caps_malloc(SETTINGS_BODY_MAX, MALLOC_CAP_SPIRAM);
+    if (s_body == NULL) s_body = malloc(SETTINGS_BODY_MAX);
+  }
+  char *body = s_body;
+  if (body == NULL) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+    return ESP_FAIL;
+  }
+
   size_t received = 0;
   while (received < req->content_len) {
     int read = httpd_req_recv(req, body + received, req->content_len - received);
@@ -200,23 +225,42 @@ static esp_err_t settings_post(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  app_settings_t next = *app_settings_get();
-  read_stations(root, &next);
-  copy_string_field(root, "ssid", next.wifi_ssid, sizeof(next.wifi_ssid));
-  copy_string_field(root, "password", next.wifi_password,
-                    sizeof(next.wifi_password));
-  copy_string_field(root, "target", next.target_name,
-                    sizeof(next.target_name));
-  copy_string_field(root, "local", next.local_name, sizeof(next.local_name));
-  copy_string_field(root, "pin", next.pin_code, sizeof(next.pin_code));
-  read_number_field(root, "buffer_ms", &next.buffer_ms);
+  if (s_next == NULL) {
+    s_next = heap_caps_malloc(sizeof(*s_next), MALLOC_CAP_SPIRAM);
+    if (s_next == NULL) s_next = malloc(sizeof(*s_next));
+  }
+  if (s_next == NULL) {
+    cJSON_Delete(root);
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+    return ESP_FAIL;
+  }
+
+  app_settings_t *next = s_next;
+  *next = *app_settings_get();
+  read_stations(root, next);
+  copy_string_field(root, "ssid", next->wifi_ssid, sizeof(next->wifi_ssid));
+  copy_string_field(root, "password", next->wifi_password,
+                    sizeof(next->wifi_password));
+  copy_string_field(root, "target", next->target_name,
+                    sizeof(next->target_name));
+  copy_string_field(root, "local", next->local_name, sizeof(next->local_name));
+  copy_string_field(root, "pin", next->pin_code, sizeof(next->pin_code));
+  read_number_field(root, "buffer_ms", &next->buffer_ms);
+
+  // The volume goes through a 32-bit read first so a crafted value cannot
+  // wrap around into the uint8_t field.
+  uint32_t volume = next->volume;
+  if (read_number_field(root, "volume", &volume)) {
+    if (volume > APP_SETTINGS_VOLUME_MAX) volume = APP_SETTINGS_VOLUME_MAX;
+    next->volume = (uint8_t)volume;
+  }
 
   const cJSON *ssp = cJSON_GetObjectItemCaseSensitive(root, "ssp");
-  if (cJSON_IsBool(ssp)) next.ssp_enabled = cJSON_IsTrue(ssp);
+  if (cJSON_IsBool(ssp)) next->ssp_enabled = cJSON_IsTrue(ssp);
 
   cJSON_Delete(root);
 
-  bool saved = app_settings_save(&next);
+  bool saved = app_settings_save(next);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, saved ? "{\"ok\":true,\"reboot\":true}"

@@ -74,6 +74,18 @@ config APP_BT_PIN_CODE
         Only the factory default: the value can be changed at runtime from
         the web page. Leave empty to keep the A2DP library default.
 
+config APP_INITIAL_VOLUME
+    int "Volume set when the speaker starts playing (0-127)"
+    default 60
+    range 0 127
+    help
+        A2DP volume pushed to the speaker as soon as the audio stream starts.
+        Speakers come back at their own (usually maximum) level on every power
+        cycle, which is what this value exists to stop.
+
+        127 is the maximum, 0 is silent. Only the factory default: the level
+        can be changed at runtime from the web page.
+
 config APP_BT_SSP
     bool "Use Secure Simple Pairing (SSP)"
     default n

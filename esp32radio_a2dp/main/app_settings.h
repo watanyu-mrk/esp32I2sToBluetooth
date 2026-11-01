@@ -30,10 +30,13 @@ extern "C" {
 #define APP_SETTINGS_BUFFER_MIN_MS 200
 #define APP_SETTINGS_BUFFER_MAX_MS 3000
 
-// How many stations the remote's next/previous buttons can cycle through. The
-// limit keeps the settings blob (and the POST body) small: each station costs
-// 256 + 33 bytes.
-#define APP_SETTINGS_MAX_STATIONS 6
+// A2DP volume range: 127 is the speaker's maximum, 0 is silent.
+#define APP_SETTINGS_VOLUME_MAX 127
+
+// How many stations the remote's next/previous buttons can cycle through. Each
+// station costs 256 + 33 bytes, so the full list is ~6 KB: the buffers that
+// only exist while settings are loaded or saved live in PSRAM for that reason.
+#define APP_SETTINGS_MAX_STATIONS 20
 
 typedef struct {
   char url[APP_SETTINGS_URL_LEN];
@@ -52,6 +55,9 @@ typedef struct {
   char pin_code[APP_SETTINGS_PIN_LEN];
   bool ssp_enabled;
   uint32_t buffer_ms;
+  // Level pushed to the speaker whenever it starts playing (0-127). Without
+  // it the speaker keeps its own volume, i.e. full blast after every boot.
+  uint8_t volume;
 } app_settings_t;
 
 // Loads the stored settings, falling back to the Kconfig defaults for missing

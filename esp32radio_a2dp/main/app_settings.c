@@ -1,8 +1,10 @@
 #include "app_settings.h"
 
 #include <inttypes.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -13,9 +15,14 @@ static const char *TAG = "settings";
 
 #define NVS_NAMESPACE "appcfg"
 #define NVS_KEY "cfg"
-// Bumped when app_settings_t changes shape. Version 1 was the single-station
-// layout, which is migrated on load instead of being thrown away.
-#define SETTINGS_VERSION 2
+
+// Bumped when app_settings_t changes shape. Older layouts are migrated on load
+// instead of being thrown away: version 1 held a single station, versions 2 and
+// 3 held six, and version 4 raised the limit to APP_SETTINGS_MAX_STATIONS.
+#define SETTINGS_VERSION 4
+
+// Station count of the layouts written before this one.
+#define LEGACY_STATIONS 6
 
 typedef struct {
   uint8_t version;
@@ -38,19 +45,69 @@ typedef struct {
   } settings;
 } stored_blob_v1_t;
 
+// Version 2 added the station list, capped at six stations.
+typedef struct {
+  uint8_t version;
+  struct {
+    app_station_t stations[LEGACY_STATIONS];
+    uint8_t station_count;
+    char wifi_ssid[APP_SETTINGS_SSID_LEN];
+    char wifi_password[APP_SETTINGS_PASSWORD_LEN];
+    char target_name[APP_SETTINGS_NAME_LEN];
+    char local_name[APP_SETTINGS_NAME_LEN];
+    char pin_code[APP_SETTINGS_PIN_LEN];
+    bool ssp_enabled;
+    uint32_t buffer_ms;
+  } settings;
+} stored_blob_v2_t;
+
+// Version 3 was the same six-station list plus the startup volume.
+typedef struct {
+  uint8_t version;
+  struct {
+    app_station_t stations[LEGACY_STATIONS];
+    uint8_t station_count;
+    char wifi_ssid[APP_SETTINGS_SSID_LEN];
+    char wifi_password[APP_SETTINGS_PASSWORD_LEN];
+    char target_name[APP_SETTINGS_NAME_LEN];
+    char local_name[APP_SETTINGS_NAME_LEN];
+    char pin_code[APP_SETTINGS_PIN_LEN];
+    bool ssp_enabled;
+    uint32_t buffer_ms;
+    uint8_t volume;
+  } settings;
+} stored_blob_v3_t;
+
+// The live copy stays in internal RAM: it is read on every status log and every
+// station change, and at APP_SETTINGS_MAX_STATIONS stations it is ~6 KB.
 static app_settings_t s_settings;
 static bool s_loaded;
 
-// The stored blob is ~2 KB. Keeping these off the stack is what lets the
-// settings code run on the 6 KB main task: the stack copies overflowed it
-// during hardware testing (the board rebooted before app_main logged).
-static stored_blob_t s_blob;
-static stored_blob_v1_t s_old_blob;
-static app_settings_t s_candidate;
+// The stored blob and the validation copy are the same size, and they are only
+// touched while settings are loaded or saved, so they live in PSRAM: internal
+// RAM has to stay with the Bluetooth and Wi-Fi stacks.
+static stored_blob_t *s_blob;
+static app_settings_t *s_candidate;
+
+// PSRAM first, internal RAM only if PSRAM is not available.
+static void *scratch_alloc(size_t size) {
+  void *memory = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (memory == NULL) memory = malloc(size);
+  return memory;
+}
 
 // Guarantees a terminated string even if the caller filled the whole array.
 static void force_terminator(char *text, size_t size) {
   text[size - 1] = '\0';
+}
+
+// The Kconfig value is the only place the range is guaranteed; anything that
+// comes from NVS or the page is clamped here first.
+static uint8_t default_volume(void) {
+  int volume = APP_INITIAL_VOLUME;
+  if (volume < 0) volume = 0;
+  if (volume > APP_SETTINGS_VOLUME_MAX) volume = APP_SETTINGS_VOLUME_MAX;
+  return (uint8_t)volume;
 }
 
 // Empty means "not configured" (the A2DP library keeps its own default);
@@ -96,6 +153,7 @@ void app_settings_defaults(app_settings_t *out) {
   strncpy(out->pin_code, APP_BT_PIN_CODE, APP_SETTINGS_PIN_LEN - 1);
   out->ssp_enabled = APP_BT_SSP_ENABLED != 0;
   out->buffer_ms = APP_BUFFER_MS;
+  out->volume = default_volume();
 }
 
 // Returns false for values that cannot work, so a bad NVS entry or a crafted
@@ -128,6 +186,12 @@ static void validate(app_settings_t *candidate, bool log_problems) {
     kept = 1;
   }
   candidate->station_count = kept;
+
+  // Entry i+1 of the old lists is entry i+1 of the new one, so a listener can
+  // keep counting stations instead of starting over.
+  for (uint8_t i = kept; i < APP_SETTINGS_MAX_STATIONS; i++) {
+    memset(&candidate->stations[i], 0, sizeof(candidate->stations[i]));
+  }
 
   force_terminator(candidate->wifi_ssid, APP_SETTINGS_SSID_LEN);
   force_terminator(candidate->wifi_password, APP_SETTINGS_PASSWORD_LEN);
@@ -168,6 +232,14 @@ static void validate(app_settings_t *candidate, bool log_problems) {
     }
     candidate->buffer_ms = APP_BUFFER_MS;
   }
+
+  if (candidate->volume > APP_SETTINGS_VOLUME_MAX) {
+    if (log_problems) {
+      ESP_LOGW(TAG, "volume %u out of range, using %u",
+               (unsigned)candidate->volume, (unsigned)default_volume());
+    }
+    candidate->volume = default_volume();
+  }
 }
 
 static void log_settings(const char *prefix) {
@@ -175,7 +247,8 @@ static void log_settings(const char *prefix) {
 
   ESP_LOGI(TAG,
            "%s: %u station(s), first '%s' (%s), Wi-Fi '%s', sink '%s', "
-           "local '%s', PIN '%s', SSP %s, buffer %" PRIu32 " ms",
+           "local '%s', PIN '%s', SSP %s, buffer %" PRIu32 " ms, "
+           "volume %u/127",
            prefix, (unsigned)count,
            s_settings.stations[0].name[0] ? s_settings.stations[0].name
                                           : "(unnamed)",
@@ -184,11 +257,27 @@ static void log_settings(const char *prefix) {
            s_settings.target_name[0] ? s_settings.target_name : "(any)",
            s_settings.local_name,
            s_settings.pin_code[0] ? s_settings.pin_code : "(library default)",
-           s_settings.ssp_enabled ? "on" : "off", s_settings.buffer_ms);
+           s_settings.ssp_enabled ? "on" : "off", s_settings.buffer_ms,
+           (unsigned)s_settings.volume);
 }
 
-// Keeps Wi-Fi, Bluetooth and audio settings; the old single station becomes
-// the only entry of the new list.
+// Copies the fields every legacy layout shares. Stations are copied up to the
+// new limit so an old list can grow instead of being cut off.
+static void copy_shared_fields(app_settings_t *out, const char *ssid,
+                               const char *password, const char *target,
+                               const char *local, const char *pin, bool ssp,
+                               uint32_t buffer_ms) {
+  strncpy(out->wifi_ssid, ssid, APP_SETTINGS_SSID_LEN - 1);
+  strncpy(out->wifi_password, password, APP_SETTINGS_PASSWORD_LEN - 1);
+  strncpy(out->target_name, target, APP_SETTINGS_NAME_LEN - 1);
+  strncpy(out->local_name, local, APP_SETTINGS_NAME_LEN - 1);
+  strncpy(out->pin_code, pin, APP_SETTINGS_PIN_LEN - 1);
+  out->ssp_enabled = ssp;
+  out->buffer_ms = buffer_ms;
+  out->volume = default_volume();
+}
+
+// Version 1: the single station becomes the only entry of the new list.
 static void migrate_v1(app_settings_t *out, const stored_blob_v1_t *old) {
   memset(out, 0, sizeof(*out));
 
@@ -197,19 +286,55 @@ static void migrate_v1(app_settings_t *out, const stored_blob_v1_t *old) {
           APP_SETTINGS_URL_LEN - 1);
   strncpy(out->stations[0].name, old->settings.station_name,
           APP_SETTINGS_NAME_LEN - 1);
-  strncpy(out->wifi_ssid, old->settings.wifi_ssid, APP_SETTINGS_SSID_LEN - 1);
-  strncpy(out->wifi_password, old->settings.wifi_password,
-          APP_SETTINGS_PASSWORD_LEN - 1);
-  strncpy(out->target_name, old->settings.target_name,
-          APP_SETTINGS_NAME_LEN - 1);
-  strncpy(out->local_name, old->settings.local_name, APP_SETTINGS_NAME_LEN - 1);
-  strncpy(out->pin_code, old->settings.pin_code, APP_SETTINGS_PIN_LEN - 1);
-  out->ssp_enabled = old->settings.ssp_enabled;
-  out->buffer_ms = old->settings.buffer_ms;
+  copy_shared_fields(out, old->settings.wifi_ssid,
+                     old->settings.wifi_password, old->settings.target_name,
+                     old->settings.local_name, old->settings.pin_code,
+                     old->settings.ssp_enabled, old->settings.buffer_ms);
+}
+
+// Version 2: six stations, no startup volume.
+static void migrate_v2(app_settings_t *out, const stored_blob_v2_t *old) {
+  memset(out, 0, sizeof(*out));
+
+  uint8_t count = old->settings.station_count;
+  if (count > LEGACY_STATIONS) count = LEGACY_STATIONS;
+  memcpy(out->stations, old->settings.stations, sizeof(out->stations));
+  out->station_count = count;
+  copy_shared_fields(out, old->settings.wifi_ssid,
+                     old->settings.wifi_password, old->settings.target_name,
+                     old->settings.local_name, old->settings.pin_code,
+                     old->settings.ssp_enabled, old->settings.buffer_ms);
+}
+
+// Version 3: six stations plus the startup volume.
+static void migrate_v3(app_settings_t *out, const stored_blob_v3_t *old) {
+  memset(out, 0, sizeof(*out));
+
+  uint8_t count = old->settings.station_count;
+  if (count > LEGACY_STATIONS) count = LEGACY_STATIONS;
+  memcpy(out->stations, old->settings.stations, sizeof(out->stations));
+  out->station_count = count;
+  copy_shared_fields(out, old->settings.wifi_ssid,
+                     old->settings.wifi_password, old->settings.target_name,
+                     old->settings.local_name, old->settings.pin_code,
+                     old->settings.ssp_enabled, old->settings.buffer_ms);
+  if (old->settings.volume <= APP_SETTINGS_VOLUME_MAX) {
+    out->volume = old->settings.volume;
+  }
 }
 
 void app_settings_load(void) {
   app_settings_defaults(&s_settings);
+
+  if (s_blob == NULL) s_blob = scratch_alloc(sizeof(*s_blob));
+  if (s_blob == NULL) {
+    // Without a buffer nothing can be read or written; the defaults still make
+    // the board usable, it just cannot remember anything.
+    ESP_LOGE(TAG, "no memory for the settings blob: using defaults");
+    s_loaded = true;
+    log_settings("defaults (out of memory)");
+    return;
+  }
 
   esp_err_t err = nvs_flash_init();
   if (err != ESP_OK && err != ESP_ERR_NVS_NO_FREE_PAGES &&
@@ -228,37 +353,84 @@ void app_settings_load(void) {
     return;
   }
 
-  size_t length = sizeof(s_blob);
-  err = nvs_get_blob(handle, NVS_KEY, &s_blob, &length);
+  size_t length = sizeof(*s_blob);
+  err = nvs_get_blob(handle, NVS_KEY, s_blob, &length);
+  nvs_close(handle);
 
-  if (err != ESP_OK || length != sizeof(s_blob) ||
-      s_blob.version != SETTINGS_VERSION) {
-    size_t old_length = sizeof(s_old_blob);
-    if (nvs_get_blob(handle, NVS_KEY, &s_old_blob, &old_length) == ESP_OK &&
-        old_length == sizeof(s_old_blob) && s_old_blob.version == 1) {
-      nvs_close(handle);
-      migrate_v1(&s_settings, &s_old_blob);
-      validate(&s_settings, true);
-      app_settings_save(&s_settings);
-      s_loaded = true;
-      log_settings("migrated from the single-station layout");
-      return;
-    }
-
-    nvs_close(handle);
-    ESP_LOGI(TAG, "stored settings missing or stale: using defaults");
-    app_settings_save(&s_settings);
+  if (err == ESP_OK && length == sizeof(*s_blob) &&
+      s_blob->version == SETTINGS_VERSION) {
+    s_settings = s_blob->settings;
+    validate(&s_settings, true);
     s_loaded = true;
-    log_settings("defaults");
+    log_settings("loaded");
     return;
   }
 
-  nvs_close(handle);
+  // An older layout: its station list is shorter than the current one, so it
+  // has to be read at its own size.
+  if (err == ESP_OK && s_blob->version != SETTINGS_VERSION) {
+    const uint8_t version = s_blob->version;
 
-  s_settings = s_blob.settings;
-  validate(&s_settings, true);
+    if (version == 1) {
+      stored_blob_v1_t *old = scratch_alloc(sizeof(*old));
+      if (old != NULL) {
+        size_t v1_length = sizeof(*old);
+        nvs_handle_t v1_handle;
+        if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &v1_handle) == ESP_OK) {
+          bool ok = nvs_get_blob(v1_handle, NVS_KEY, old, &v1_length) == ESP_OK &&
+                    v1_length == sizeof(*old) && old->version == 1;
+          nvs_close(v1_handle);
+          if (ok) {
+            migrate_v1(&s_settings, old);
+            free(old);
+            validate(&s_settings, true);
+            app_settings_save(&s_settings);
+            s_loaded = true;
+            log_settings("migrated from the single-station layout");
+            return;
+          }
+        }
+        free(old);
+      }
+    }
+
+    if (version == 2 || version == 3) {
+      // Version 2 and 3 differ only by the trailing volume byte.
+      size_t legacy_size = version == 2 ? sizeof(stored_blob_v2_t)
+                                        : sizeof(stored_blob_v3_t);
+      void *old = scratch_alloc(legacy_size);
+      if (old != NULL) {
+        size_t legacy_length = legacy_size;
+        nvs_handle_t legacy_handle;
+        if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &legacy_handle) == ESP_OK) {
+          bool ok = nvs_get_blob(legacy_handle, NVS_KEY, old, &legacy_length) ==
+                        ESP_OK &&
+                    legacy_length == legacy_size;
+          nvs_close(legacy_handle);
+          if (ok) {
+            if (version == 2) {
+              migrate_v2(&s_settings, (const stored_blob_v2_t *)old);
+            } else {
+              migrate_v3(&s_settings, (const stored_blob_v3_t *)old);
+            }
+            free(old);
+            validate(&s_settings, true);
+            app_settings_save(&s_settings);
+            s_loaded = true;
+            log_settings(version == 2 ? "migrated from the six-station layout"
+                                      : "migrated from the volume layout");
+            return;
+          }
+        }
+        free(old);
+      }
+    }
+  }
+
+  ESP_LOGI(TAG, "stored settings missing or stale: using defaults");
+  app_settings_save(&s_settings);
   s_loaded = true;
-  log_settings("loaded");
+  log_settings("defaults");
 }
 
 const app_settings_t *app_settings_get(void) {
@@ -269,8 +441,15 @@ const app_settings_t *app_settings_get(void) {
 bool app_settings_save(const app_settings_t *candidate) {
   if (candidate == NULL) return false;
 
-  s_candidate = *candidate;
-  validate(&s_candidate, true);
+  if (s_candidate == NULL) s_candidate = scratch_alloc(sizeof(*s_candidate));
+  if (s_blob == NULL) s_blob = scratch_alloc(sizeof(*s_blob));
+  if (s_candidate == NULL || s_blob == NULL) {
+    ESP_LOGE(TAG, "cannot allocate the settings buffers");
+    return false;
+  }
+
+  *s_candidate = *candidate;
+  validate(s_candidate, true);
 
   esp_err_t err = nvs_flash_init();
   if (err != ESP_OK && err != ESP_ERR_NVS_NO_FREE_PAGES &&
@@ -286,9 +465,9 @@ bool app_settings_save(const app_settings_t *candidate) {
     return false;
   }
 
-  s_blob.version = SETTINGS_VERSION;
-  s_blob.settings = s_candidate;
-  err = nvs_set_blob(handle, NVS_KEY, &s_blob, sizeof(s_blob));
+  s_blob->version = SETTINGS_VERSION;
+  s_blob->settings = *s_candidate;
+  err = nvs_set_blob(handle, NVS_KEY, s_blob, sizeof(*s_blob));
   if (err == ESP_OK) err = nvs_commit(handle);
   nvs_close(handle);
 
@@ -297,7 +476,7 @@ bool app_settings_save(const app_settings_t *candidate) {
     return false;
   }
 
-  s_settings = s_candidate;
+  s_settings = *s_candidate;
   s_loaded = true;
   log_settings("saved");
   return true;
